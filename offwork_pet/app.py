@@ -4,18 +4,20 @@ from datetime import datetime
 import math
 from pathlib import Path
 import sys
+from time import monotonic
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTime, QTimer, QLockFile, QStandardPaths
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QColor, QCursor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFormLayout, QHBoxLayout, QLabel, QMenu, QMessageBox,
-    QSlider, QSystemTrayIcon, QTimeEdit, QVBoxLayout, QWidget,
+    QSlider, QSpinBox, QSystemTrayIcon, QTimeEdit, QVBoxLayout, QWidget,
 )
 
-from .core import Config, ReminderTracker, countdown, load_config, save_config
+from .core import Config, ReminderTracker, bubble_visible, countdown, load_config, save_config
 
 PALETTES = {"奶油橘": ("#F5C997", "#FFF0D9"), "薄荷绿": ("#A9D5BB", "#E8F6EC"), "云朵蓝": ("#B3CDEC", "#ECF3FF")}
+BUBBLE_MODES = {"始终展示": "always", "鼠标悬停时展示": "hover", "点击小猫后展示": "click", "悬停或点击时展示": "hover_click", "始终隐藏": "hidden"}
 
 
 def startup_enabled():
@@ -86,7 +88,7 @@ class SettingsDialog(QDialog):
         self.color.setCurrentText(config.color)
         form.addRow("小猫配色", self.color)
         self.scale = QSlider(Qt.Orientation.Horizontal)
-        self.scale.setRange(70, 150)
+        self.scale.setRange(50, 200)
         self.scale.setValue(config.scale)
         self.size_label = QLabel(f"{config.scale}%")
         self.scale.valueChanged.connect(lambda value: self.size_label.setText(f"{value}%"))
@@ -94,8 +96,29 @@ class SettingsDialog(QDialog):
         size_row.addWidget(self.scale)
         size_row.addWidget(self.size_label)
         form.addRow("宠物大小", size_row)
+        self.opacity = QSlider(Qt.Orientation.Horizontal)
+        self.opacity.setRange(20, 100)
+        self.opacity.setValue(config.opacity)
+        self.opacity_label = QLabel(f"{config.opacity}%")
+        self.opacity.valueChanged.connect(lambda value: self.opacity_label.setText(f"{value}%"))
+        opacity_row = QHBoxLayout()
+        opacity_row.addWidget(self.opacity)
+        opacity_row.addWidget(self.opacity_label)
+        form.addRow("不透明度", opacity_row)
+        self.bubble_mode = QComboBox()
+        for label, mode in BUBBLE_MODES.items():
+            self.bubble_mode.addItem(label, mode)
+        self.bubble_mode.setCurrentIndex(self.bubble_mode.findData(config.bubble_mode))
+        form.addRow("气泡展示方式", self.bubble_mode)
+        self.bubble_seconds = QSpinBox()
+        self.bubble_seconds.setRange(2, 30)
+        self.bubble_seconds.setSuffix(" 秒")
+        self.bubble_seconds.setValue(config.bubble_seconds)
+        self.bubble_mode.currentIndexChanged.connect(lambda _: self.bubble_seconds.setEnabled(self.bubble_mode.currentData() in ("click", "hover_click")))
+        self.bubble_seconds.setEnabled(config.bubble_mode in ("click", "hover_click"))
+        form.addRow("点击后停留", self.bubble_seconds)
         self.checks = {}
-        for key, label in (("topmost", "始终置顶"), ("bubble", "显示倒计时气泡"), ("reminders", "提前 30 分钟、10 分钟及到点提醒"), ("sound", "提醒时播放系统提示音"), ("click_through", "鼠标穿透（通过托盘菜单恢复）")):
+        for key, label in (("topmost", "始终置顶"), ("interactive", "陪伴互动（目光跟随、摸头回应、歪头挥爪）"), ("reminders", "提前 30 分钟、10 分钟及到点提醒"), ("sound", "提醒时播放系统提示音"), ("click_through", "鼠标穿透（通过托盘菜单恢复）")):
             check = QCheckBox(label)
             check.setChecked(getattr(config, key))
             self.checks[key] = check
@@ -107,7 +130,7 @@ class SettingsDialog(QDialog):
         self.startup.setChecked(startup_enabled())
         form.addRow(self.startup)
         root.addLayout(form)
-        hint = QLabel("拖动小猫移动 · 双击打开设置 · 右键打开菜单\n设置仅保存到本机；默认不启用开机启动和声音。")
+        hint = QLabel("拖动移动 · 单击摸头 · 双击设置 · 右键菜单\nCtrl + 滚轮调大小，Ctrl + Shift + 滚轮调不透明度。\n鼠标穿透时不能拖动或点击；悬停气泡仍可显示。")
         hint.setStyleSheet("color:#8B837B;font-size:12px;margin:12px 0;")
         root.addWidget(hint)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
@@ -128,7 +151,9 @@ class SettingsDialog(QDialog):
                        weekdays=[i for i, day in enumerate(self.days) if day.isChecked()],
                        override_date=datetime.now().date().isoformat() if self.today.isChecked() else "",
                        override_time=self.today_clock.time().toString("HH:mm"), color=self.color.currentText(),
-                       scale=self.scale.value(), **{key: check.isChecked() for key, check in self.checks.items()})
+                       scale=self.scale.value(), opacity=self.opacity.value(),
+                       bubble_mode=self.bubble_mode.currentData(), bubble_seconds=self.bubble_seconds.value(),
+                       **{key: check.isChecked() for key, check in self.checks.items()})
 
 
 class Pet(QWidget):
@@ -138,12 +163,23 @@ class Pet(QWidget):
         self.persist = persist
         self.phase = 0
         self.drag = None
+        self.press_position = None
+        self.dragging = False
+        self.hovered = False
+        self.clicked_until = 0.0
+        self.reaction_until = 0.0
+        self.reaction_index = 0
+        self.reaction_message = ""
+        self.gaze = QPointF(0, 0)
+        self.last_activity = monotonic()
+        self.double_click = False
         self.dialog = None
         self.reminders = ReminderTracker()
         self.snapshot = countdown(datetime.now(), config)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowTitle("下班搭子")
-        self.setToolTip("拖动移动 · 双击设置 · 右键菜单")
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.tray = QSystemTrayIcon(self)
         pix = QPixmap(64, 64)
         pix.fill(Qt.GlobalColor.transparent)
@@ -177,6 +213,12 @@ class Pet(QWidget):
             self.config.click_through = False
         self.apply_config()
         self.restore(initial=True)
+        self.click_timer = QTimer(self)
+        self.click_timer.setSingleShot(True)
+        self.click_timer.timeout.connect(self.pet_cat)
+        self.save_timer = QTimer(self)
+        self.save_timer.setSingleShot(True)
+        self.save_timer.timeout.connect(self.write_config)
         self.tick_timer = QTimer(self)
         self.tick_timer.timeout.connect(self.tick)
         self.tick_timer.start(1000)
@@ -199,11 +241,37 @@ class Pet(QWidget):
             flags |= Qt.WindowType.WindowTransparentForInput
         self.setWindowFlags(flags)
         self.setFixedSize(round(280 * self.config.scale / 100), round(280 * self.config.scale / 100))
+        self.setWindowOpacity(self.config.opacity / 100)
+        self.hovered = False
+        self.clicked_until = 0.0
         self.pass_action.setChecked(self.config.click_through)
         self.snapshot = countdown(datetime.now(), self.config)
         self.reminders = ReminderTracker()
         self.tick()
         self.show()
+
+    def show_bubble(self, now=None):
+        return bubble_visible(self.config.bubble_mode, self.hovered, self.clicked_until,
+                              monotonic() if now is None else now)
+
+    def cat_contains(self, point):
+        scale = self.config.scale / 100
+        x, y = point.x() / scale, point.y() / scale
+        return (((x - 141) / 71) ** 2 + ((y - 181) / 52) ** 2 <= 1
+                or QRectF(84, 117, 115, 34).contains(QPointF(x, y))
+                or QRectF(86, 211, 111, 47).contains(QPointF(x, y))
+                or QRectF(195, 199, 46, 54).contains(QPointF(x, y)))
+
+    def pet_cat(self):
+        now = monotonic()
+        self.clicked_until = now + self.config.bubble_seconds
+        if self.config.interactive:
+            self.reaction_until = now + 2.5
+            messages = ("喵～收到你的摸摸啦", "你认真工作，我认真陪你", "累了就伸个懒腰吧", "有我在，慢慢来就好")
+            self.reaction_message = messages[self.reaction_index % len(messages)]
+            self.reaction_index += 1
+        self.last_activity = now
+        self.update()
 
     def restore(self, initial=False):
         if not initial:
@@ -237,9 +305,17 @@ class Pet(QWidget):
             self.dialog.raise_()
             self.dialog.activateWindow()
             return
+        original = replace(self.config)
+        original_position = self.pos()
+        self.save_timer.stop()
+        self.click_timer.stop()
         self.dialog = SettingsDialog(self.config)
+        self.dialog.scale.valueChanged.connect(self.resize_pet)
+        self.dialog.opacity.valueChanged.connect(lambda value: self.setWindowOpacity(value / 100))
+        accepted = False
         try:
             if self.dialog.exec() == QDialog.DialogCode.Accepted:
+                accepted = True
                 new_config = self.dialog.result_config(self.config)
                 try:
                     if self.dialog.startup.isChecked() != startup_enabled():
@@ -248,8 +324,14 @@ class Pet(QWidget):
                     QMessageBox.warning(self.dialog, "开机启动设置失败", str(error))
                 self.config = new_config
                 self.apply_config()
+                self.keep_on_screen()
+                self.config.x, self.config.y = self.x(), self.y()
                 self.write_config()
         finally:
+            if not accepted:
+                self.config = original
+                self.apply_config()
+                self.move(original_position)
             self.dialog.deleteLater()
             self.dialog = None
 
@@ -268,6 +350,17 @@ class Pet(QWidget):
     def animate(self):
         if self.isVisible():
             self.phase += 1
+            now = monotonic()
+            local = self.mapFromGlobal(QCursor.pos())
+            over_cat = self.cat_contains(local)
+            over_bubble = self.show_bubble(now) and QRectF(20, 8, 240, 98).contains(QPointF(local) / (self.config.scale / 100))
+            entered = over_cat and not self.hovered
+            self.hovered = over_cat or over_bubble
+            if entered:
+                self.last_activity = now
+            target_x = max(-1.0, min(1.0, (local.x() / (self.config.scale / 100) - 141) / 240))
+            target_y = max(-1.0, min(1.0, (local.y() / (self.config.scale / 100) - 178) / 180))
+            self.gaze += (QPointF(target_x, target_y) - self.gaze) * 0.18
             self.update()
 
     def paintEvent(self, event):
@@ -284,7 +377,10 @@ class Pet(QWidget):
             p.setPen(QColor(color))
             p.setFont(QFont("Microsoft YaHei UI", size, QFont.Weight.Bold if bold else QFont.Weight.Normal))
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, content)
-        if self.config.bubble:
+        now = monotonic()
+        reacting = self.config.interactive and now < self.reaction_until
+        waving = self.config.interactive and (reacting or (self.phase % 760 < 55 and self.phase > 55))
+        if self.show_bubble(now):
             p.setPen(QPen(QColor("#E9E2D7"), 1))
             p.setBrush(QColor("#FFFCF6"))
             p.drawRoundedRect(QRectF(20, 8, 240, 94), 22, 22)
@@ -294,19 +390,39 @@ class Pet(QWidget):
             text(QRectF(20, 16, 240, 25), caption, 10, "#9A8977")
             text(QRectF(20, 40, 240, 42), self.snapshot.display, 24, "#55483E", True)
             foot = "快了快了，准备收工" if self.snapshot.state == "working" and self.snapshot.seconds <= 1800 else "小猫陪你，慢慢来" if self.snapshot.state == "working" else "生活时间，现在开始"
+            if self.config.interactive:
+                if self.dragging:
+                    foot = "喵！我们要搬去哪里呀"
+                elif reacting:
+                    foot = self.reaction_message
+                elif self.hovered:
+                    foot = "我在呢，陪你一起等下班"
             text(QRectF(20, 79, 240, 18), foot, 8, "#A29180")
         ellipse(69, 251, 145, 14, "#20000000")
         p.save()
         p.translate(0, math.sin(self.phase / 14) * 2)
+        if self.dragging and self.config.interactive:
+            p.translate(141, 154)
+            p.rotate(math.sin(self.phase / 3) * 6)
+            p.translate(-141, -154)
         # Curled tail, body, paws, then a large expressive head.
         p.setPen(QPen(QColor(fur), 18, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         tail = QPainterPath(QPointF(192, 237))
-        tail.cubicTo(240, 247, 239, 195 + math.sin(self.phase / 12) * 7, 218, 207)
+        tail.cubicTo(240, 247, 239, 195 + math.sin(self.phase / (4 if reacting else 12)) * (12 if reacting else 7), 218, 207)
         p.drawPath(tail)
         ellipse(93, 186, 98, 70, fur)
         ellipse(113, 205, 57, 47, cream)
         ellipse(86, 241, 43, 17, fur)
         ellipse(154, 241, 43, 17, fur)
+        # The head gently tilts towards the pointer, independently of the body.
+        p.save()
+        if self.config.interactive:
+            tilt = self.gaze.x() * 5 if self.hovered else math.sin(self.phase / 42) * 3
+            if reacting:
+                tilt = math.sin(self.phase / 8) * 7
+            p.translate(141, 196)
+            p.rotate(tilt)
+            p.translate(-141, -196)
         p.setPen(QPen(ink, 2.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
         p.setBrush(QColor(fur))
         p.drawPolygon(QPolygonF([QPointF(85, 168), QPointF(84, 116), QPointF(123, 143)]))
@@ -321,14 +437,22 @@ class Pet(QWidget):
         ellipse(177, 184, 22, 10, "#E8A499")
         p.setPen(QPen(ink, 3.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         blink = self.phase % 95 in (0, 1, 2, 3)
-        happy = self.snapshot.state in ("done", "rest")
+        happy = reacting or (self.snapshot.state in ("done", "rest") and not self.hovered)
         for x in (113, 169):
-            if blink or happy:
+            if self.dragging and self.config.interactive:
+                p.drawEllipse(QRectF(x - 4, 171, 8, 12))
+            elif blink or happy:
                 path = QPainterPath(QPointF(x - 5, 178))
                 path.quadTo(x, 172 if happy else 180, x + 5, 178)
                 p.drawPath(path)
             else:
-                p.drawLine(QPointF(x, 174), QPointF(x, 181))
+                # Bright eyes and small pupils make the gaze readable at 100%.
+                ellipse(x - 7, 169, 14, 19, "#FFF9EF")
+                dx = self.gaze.x() * 3.5 if self.config.interactive else 0
+                dy = self.gaze.y() * 3 if self.config.interactive else 0
+                ellipse(x - 3 + dx, 173 + dy, 6, 10, "#55483E")
+                ellipse(x - 1 + dx, 174 + dy, 2, 3, "#FFFFFF")
+                p.setPen(QPen(ink, 3.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         ellipse(138, 186, 7, 5, "#B27770")
         p.setPen(QPen(ink, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         mouth = QPainterPath(QPointF(132, 195))
@@ -339,24 +463,95 @@ class Pet(QWidget):
             p.drawLine(QPointF(x, 185), QPointF(end, 181))
             p.drawLine(QPointF(x, 192), QPointF(end, 195))
         p.restore()
+        if waving:
+            p.save()
+            p.translate(199, 221)
+            p.rotate(-30 + math.sin(self.phase / 3) * 18)
+            ellipse(-9, -27, 22, 39, fur)
+            ellipse(-4, -24, 12, 13, "#E8A499")
+            p.restore()
+        p.restore()
+        if reacting:
+            p.save()
+            p.translate(209, 139 - (1 - (self.reaction_until - now) / 2.5) * 20)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor("#E79799"))
+            heart = QPainterPath(QPointF(0, 4))
+            heart.cubicTo(-15, -6, -8, -15, 0, -8)
+            heart.cubicTo(8, -15, 15, -6, 0, 4)
+            p.drawPath(heart)
+            p.restore()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.drag = event.globalPosition().toPoint() - self.pos()
+            self.press_position = event.globalPosition().toPoint()
+            self.dragging = False
 
     def mouseMoveEvent(self, event):
         if self.drag is not None and event.buttons() & Qt.MouseButton.LeftButton:
-            self.move(event.globalPosition().toPoint() - self.drag)
+            if (event.globalPosition().toPoint() - self.press_position).manhattanLength() >= QApplication.startDragDistance():
+                self.dragging = True
+                self.click_timer.stop()
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            if self.dragging:
+                self.move(event.globalPosition().toPoint() - self.drag)
+                self.keep_on_screen(event.globalPosition().toPoint())
+                self.last_activity = monotonic()
 
     def mouseReleaseEvent(self, event):
-        if self.drag is not None:
+        if event.button() == Qt.MouseButton.LeftButton and self.drag is not None:
+            was_dragging = self.dragging
             self.drag = None
-            self.config.x, self.config.y = self.x(), self.y()
-            self.write_config()
+            self.dragging = False
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            if was_dragging:
+                self.config.x, self.config.y = self.x(), self.y()
+                self.write_config()
+            elif self.cat_contains(event.position()) and not self.double_click:
+                # Wait out the double-click interval so opening settings doesn't pet.
+                self.click_timer.start(QApplication.doubleClickInterval())
+        self.double_click = False
 
     def mouseDoubleClickEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        self.click_timer.stop()
+        self.double_click = True
         self.drag = None
         self.open_settings()
+
+    def keep_on_screen(self, point=None):
+        screen = QApplication.screenAt(point or self.frameGeometry().center()) or QApplication.primaryScreen()
+        rect = screen.availableGeometry()
+        self.move(max(rect.left(), min(self.x(), rect.right() - self.width() + 1)),
+                  max(rect.top(), min(self.y(), rect.bottom() - self.height() + 1)))
+
+    def wheelEvent(self, event):
+        if not event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            event.ignore()
+            return
+        delta = event.angleDelta().y()
+        if not delta:
+            event.ignore()
+            return
+        step = 5 if delta > 0 else -5
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            self.config.opacity = max(20, min(100, self.config.opacity + step))
+            self.setWindowOpacity(self.config.opacity / 100)
+        else:
+            self.resize_pet(max(50, min(200, self.config.scale + step)))
+        self.save_timer.start(350)
+        event.accept()
+
+    def resize_pet(self, scale):
+        anchor = QPoint(self.x() + self.width() // 2, self.y() + self.height())
+        self.config.scale = scale
+        self.setFixedSize(round(280 * scale / 100), round(280 * scale / 100))
+        self.move(anchor.x() - self.width() // 2, anchor.y() - self.height())
+        self.keep_on_screen()
+        self.config.x, self.config.y = self.x(), self.y()
+        self.update()
 
     def contextMenuEvent(self, event):
         self.menu.exec(event.globalPos())

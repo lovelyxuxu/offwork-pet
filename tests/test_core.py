@@ -3,7 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from offwork_pet.core import Config, ReminderTracker, countdown, load_config, save_config
+from offwork_pet.core import Config, ReminderTracker, bubble_visible, countdown, load_config, save_config, validate
 
 
 class CountdownTests(unittest.TestCase):
@@ -44,6 +44,29 @@ class CountdownTests(unittest.TestCase):
             loaded, warning = load_config(path)
             self.assertTrue(warning)
             self.assertEqual(loaded, Config())
+
+    def test_old_bubble_config_migration(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "config.json"
+            for old, expected in (("true", "always"), ("false", "hidden")):
+                path.write_text('{"bubble": ' + old + ', "off_time": "17:30"}', encoding="utf-8")
+                config, warning = load_config(path)
+                self.assertEqual(warning, "")
+                self.assertEqual(config.bubble_mode, expected)
+                self.assertEqual(config.off_time, "17:30")
+
+    def test_bubble_modes_and_click_expiry(self):
+        for mode in ("always", "hover", "click", "hover_click", "hidden"):
+            with self.subTest(mode=mode):
+                self.assertEqual(bubble_visible(mode, False, 0, 10), mode == "always")
+                self.assertEqual(bubble_visible(mode, True, 0, 10), mode in ("always", "hover", "hover_click"))
+                self.assertEqual(bubble_visible(mode, False, 12, 10), mode in ("always", "click", "hover_click"))
+                self.assertEqual(bubble_visible(mode, False, 12, 12), mode == "always")
+
+    def test_invalid_appearance_config(self):
+        for config in (Config(opacity=0), Config(scale=201), Config(bubble_mode="other"), Config(bubble_seconds=0)):
+            with self.assertRaises(ValueError):
+                validate(config)
 
 
 if __name__ == "__main__":

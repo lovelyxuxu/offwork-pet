@@ -16,7 +16,10 @@ class Config:
     color: str = "奶油橘"
     scale: int = 100
     topmost: bool = True
-    bubble: bool = True
+    opacity: int = 100
+    bubble_mode: str = "always"
+    bubble_seconds: int = 6
+    interactive: bool = True
     reminders: bool = True
     sound: bool = False
     click_through: bool = False
@@ -35,13 +38,19 @@ def validate(config: Config) -> Config:
             raise ValueError("下班时间格式必须为 HH:MM")
     if not config.weekdays or any(type(day) is not int or day not in range(7) for day in config.weekdays):
         raise ValueError("至少选择一个工作日")
-    if type(config.scale) is not int or not 70 <= config.scale <= 150:
-        raise ValueError("大小必须在 70% 到 150% 之间")
+    if type(config.scale) is not int or not 50 <= config.scale <= 200:
+        raise ValueError("大小必须在 50% 到 200% 之间")
+    if type(config.opacity) is not int or not 20 <= config.opacity <= 100:
+        raise ValueError("不透明度必须在 20% 到 100% 之间")
+    if config.bubble_mode not in ("always", "hover", "click", "hover_click", "hidden"):
+        raise ValueError("未知气泡展示方式")
+    if type(config.bubble_seconds) is not int or not 2 <= config.bubble_seconds <= 30:
+        raise ValueError("点击展示时长必须在 2 到 30 秒之间")
     if config.color not in ("奶油橘", "薄荷绿", "云朵蓝"):
         raise ValueError("未知配色")
     if config.override_date:
         datetime.strptime(config.override_date, "%Y-%m-%d")
-    for name in ("topmost", "bubble", "reminders", "sound", "click_through"):
+    for name in ("topmost", "interactive", "reminders", "sound", "click_through"):
         if type(getattr(config, name)) is not bool:
             raise ValueError("开关配置必须为布尔值")
     for name in ("x", "y"):
@@ -56,6 +65,8 @@ def load_config(path: Path | None = None) -> tuple[Config, str]:
         return Config(), ""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        if "bubble_mode" not in data and "bubble" in data:
+            data["bubble_mode"] = "always" if data["bubble"] else "hidden"
         known = Config.__dataclass_fields__
         return validate(Config(**{k: v for k, v in data.items() if k in known})), ""
     except (OSError, ValueError, TypeError, AttributeError):
@@ -69,6 +80,13 @@ def save_config(config: Config, path: Path | None = None) -> None:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(asdict(config), ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(path)
+
+
+def bubble_visible(mode: str, hovered: bool, clicked_until: float, now: float) -> bool:
+    """Use monotonic time so changing the system clock cannot extend a click."""
+    return (mode == "always"
+            or (mode in ("hover", "hover_click") and hovered)
+            or (mode in ("click", "hover_click") and now < clicked_until))
 
 
 @dataclass(frozen=True)
