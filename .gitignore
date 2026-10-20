@@ -9,3 +9,8 @@ dist/
 .env
 .env.*
 config.json
+work/
+outputs/
+*.sqlite3
+*.sqlite3-*
+identity*.json

@@ -14,6 +14,13 @@ class Config:
     override_date: str = ""
     override_time: str = "18:00"
     color: str = "奶油橘"
+    character: str = "lulu"
+    relay_url: str = ""
+    network_enabled: bool = False
+    paused: bool = False
+    remote_text: bool = True
+    remote_sound: bool = False
+    buddy_note: str = ""
     scale: int = 100
     topmost: bool = True
     opacity: int = 100
@@ -27,8 +34,13 @@ class Config:
     y: int | None = None
 
 
+def data_dir() -> Path:
+    custom = os.environ.get('OFFWORK_HOME')
+    return Path(custom) if custom else Path(os.environ.get("APPDATA", str(Path.home()))) / "OffworkPet"
+
+
 def config_path() -> Path:
-    return Path(os.environ.get("APPDATA", str(Path.home()))) / "OffworkPet" / "config.json"
+    return data_dir() / "config.json"
 
 
 def validate(config: Config) -> Config:
@@ -48,9 +60,15 @@ def validate(config: Config) -> Config:
         raise ValueError("点击展示时长必须在 2 到 30 秒之间")
     if config.color not in ("奶油橘", "薄荷绿", "云朵蓝"):
         raise ValueError("未知配色")
+    if config.character not in ('lulu', 'lumei'):
+        raise ValueError('未知形象')
+    if not isinstance(config.relay_url, str) or len(config.relay_url) > 500:
+        raise ValueError('服务地址不正确')
+    if not isinstance(config.buddy_note, str) or len(config.buddy_note) > 24:
+        raise ValueError('搭子备注最多 24 字')
     if config.override_date:
         datetime.strptime(config.override_date, "%Y-%m-%d")
-    for name in ("topmost", "interactive", "reminders", "sound", "click_through"):
+    for name in ("topmost", "interactive", "reminders", "sound", "click_through", 'network_enabled', 'paused', 'remote_text', 'remote_sound'):
         if type(getattr(config, name)) is not bool:
             raise ValueError("开关配置必须为布尔值")
     for name in ("x", "y"):

@@ -1,23 +1,27 @@
 """Native transparent desktop cat, drawn with Qt (no external image assets)."""
 from dataclasses import replace
+from collections import deque
 from datetime import datetime
-import math
+import os
 from pathlib import Path
 import sys
 from time import monotonic
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTime, QTimer, QLockFile, QStandardPaths
-from PySide6.QtGui import QColor, QCursor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTime, QTimer, QLockFile
+from PySide6.QtGui import QColor, QCursor, QFont, QIcon, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFormLayout, QHBoxLayout, QLabel, QMenu, QMessageBox,
     QSlider, QSpinBox, QSystemTrayIcon, QTimeEdit, QVBoxLayout, QWidget,
 )
 
-from .core import Config, ReminderTracker, bubble_visible, countdown, load_config, save_config
+from .core import Config, ReminderTracker, bubble_visible, countdown, data_dir, load_config, save_config
+from .buddy import BuddyClient
+from .buddy_ui import BuddyDialog
+from .characters import CHARACTERS, character_icon, draw_character
 
 PALETTES = {"奶油橘": ("#F5C997", "#FFF0D9"), "薄荷绿": ("#A9D5BB", "#E8F6EC"), "云朵蓝": ("#B3CDEC", "#ECF3FF")}
-BUBBLE_MODES = {"始终展示": "always", "鼠标悬停时展示": "hover", "点击小猫后展示": "click", "悬停或点击时展示": "hover_click", "始终隐藏": "hidden"}
+BUBBLE_MODES = {"始终展示": "always", "鼠标悬停时展示": "hover", "点击宠物后展示": "click", "悬停或点击时展示": "hover_click", "始终隐藏": "hidden"}
 
 
 def startup_enabled():
@@ -83,10 +87,15 @@ class SettingsDialog(QDialog):
         self.today.toggled.connect(self.today_clock.setEnabled)
         form.addRow(self.today)
         form.addRow("今天几点下班", self.today_clock)
+        self.character = QComboBox()
+        for identifier, label in CHARACTERS.items():
+            self.character.addItem(QIcon(character_icon(identifier)), label, identifier)
+        self.character.setCurrentIndex(self.character.findData(config.character))
+        form.addRow('宠物形象', self.character)
         self.color = QComboBox()
         self.color.addItems(PALETTES)
         self.color.setCurrentText(config.color)
-        form.addRow("小猫配色", self.color)
+        form.addRow("气泡主题", self.color)
         self.scale = QSlider(Qt.Orientation.Horizontal)
         self.scale.setRange(50, 200)
         self.scale.setValue(config.scale)
@@ -151,7 +160,7 @@ class SettingsDialog(QDialog):
                        weekdays=[i for i, day in enumerate(self.days) if day.isChecked()],
                        override_date=datetime.now().date().isoformat() if self.today.isChecked() else "",
                        override_time=self.today_clock.time().toString("HH:mm"), color=self.color.currentText(),
-                       scale=self.scale.value(), opacity=self.opacity.value(),
+                       character=self.character.currentData(), scale=self.scale.value(), opacity=self.opacity.value(),
                        bubble_mode=self.bubble_mode.currentData(), bubble_seconds=self.bubble_seconds.value(),
                        **{key: check.isChecked() for key, check in self.checks.items()})
 
@@ -174,6 +183,14 @@ class Pet(QWidget):
         self.last_activity = monotonic()
         self.double_click = False
         self.dialog = None
+        self.buddy_dialog = None
+        self.remote_current = None
+        self.remote_queue = None
+        self.remote_started = 0.0
+        self.remote_until = 0.0
+        self.remote_message = ''
+        self.remote_plays = deque(maxlen=3)
+        self.current_relation_id = ''
         self.reminders = ReminderTracker()
         self.snapshot = countdown(datetime.now(), config)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -181,28 +198,21 @@ class Pet(QWidget):
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.tray = QSystemTrayIcon(self)
-        pix = QPixmap(64, 64)
-        pix.fill(Qt.GlobalColor.transparent)
-        p = QPainter(pix)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setBrush(QColor("#F5C997"))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(5, 13, 54, 46)
-        p.drawPolygon(QPolygonF([QPointF(8, 25), QPointF(9, 3), QPointF(28, 16)]))
-        p.drawPolygon(QPolygonF([QPointF(36, 16), QPointF(55, 3), QPointF(56, 25)]))
-        p.setBrush(QColor("#493D35"))
-        p.drawEllipse(21, 32, 4, 6)
-        p.drawEllipse(40, 32, 4, 6)
-        p.end()
-        self.setWindowIcon(QIcon(pix))
-        self.tray.setIcon(QIcon(pix))
+        icon = QIcon(character_icon(config.character))
+        self.setWindowIcon(icon)
+        self.tray.setIcon(icon)
         self.menu = QMenu()
-        self.menu.addAction("显示小猫 / 恢复位置", self.restore)
+        self.menu.addAction("显示宠物 / 恢复位置", self.restore)
         self.menu.addAction("设置…", self.open_settings)
+        self.menu.addAction('搭子…', self.open_buddy)
+        self.pause_action = self.menu.addAction('暂停接收远程互动')
+        self.pause_action.setCheckable(True)
+        self.pause_action.setChecked(config.paused)
+        self.pause_action.triggered.connect(self.set_paused)
         self.pass_action = self.menu.addAction("鼠标穿透")
         self.pass_action.setCheckable(True)
         self.pass_action.triggered.connect(self.toggle_passthrough)
-        self.menu.addAction("隐藏小猫", self.hide)
+        self.menu.addAction("隐藏宠物", self.hide)
         self.menu.addSeparator()
         self.menu.addAction("退出下班搭子", self.quit)
         self.tray.setContextMenu(self.menu)
@@ -225,6 +235,120 @@ class Pet(QWidget):
         self.animation = QTimer(self)
         self.animation.timeout.connect(self.animate)
         self.animation.start(50)
+        self.buddy = BuddyClient(self.config, self, persist=persist)
+        self.buddy.changed.connect(self.buddy_changed)
+        self.buddy.incoming.connect(self.receive_remote)
+        self.buddy.outgoing.connect(self.send_animation)
+        if self.config.network_enabled and persist:
+            QTimer.singleShot(0, self.buddy.start)
+
+    def open_buddy(self):
+        if self.buddy_dialog is None:
+            self.buddy_dialog = BuddyDialog(self)
+        self.buddy_dialog.show()
+        self.buddy_dialog.raise_()
+        self.buddy_dialog.activateWindow()
+
+    def buddy_changed(self):
+        relation_id = self.buddy.relation['id'] if self.buddy.relation else ''
+        if relation_id != self.current_relation_id or not self.buddy.ready:
+            self.clear_remote()
+            self.current_relation_id = relation_id
+
+    def set_paused(self, paused):
+        self.config.paused = paused
+        self.pause_action.setChecked(paused)
+        if paused:
+            self.clear_remote()
+        self.buddy.update_config(self.config)
+        self.write_config()
+        self.buddy.changed.emit()
+
+    def clear_remote(self):
+        self.remote_current = self.remote_queue = None
+        self.remote_until = 0.0
+        self.remote_message = ''
+        self.update()
+
+    def receive_remote(self, msg):
+        import time
+        valid = (self.buddy.ready and self.buddy.relation and not self.config.paused and self.isVisible()
+                 and not self.dialog and msg.get('relation_id') == self.buddy.relation['id']
+                 and msg.get('action') in ('pinch', 'bonk') and isinstance(msg.get('action_id'), str)
+                 and type(msg.get('count')) is int and 1 <= msg['count'] <= 5
+                 and type(msg.get('expires_at')) in (int, float)
+                 and 0 < msg['expires_at'] - time.time() - self.buddy.clock_offset <= 6)
+        if not valid:
+            self.buddy.acknowledge(msg, False)
+            return
+        key = (msg['relation_id'], msg['action_id'])
+        if key in self.buddy.received:
+            self.buddy.acknowledge(msg, True)
+            return
+        if len(self.remote_plays) == 3 and monotonic() - self.remote_plays[0] < 8:
+            self.buddy.acknowledge(msg, False)
+            return
+        if self.remote_queue and self.remote_queue['action'] != msg['action']:
+            self.buddy.acknowledge(msg, False)
+            return
+        if self.remote_queue:
+            self.remote_queue['count'] = min(5, self.remote_queue['count'] + msg['count'])
+            self.remote_queue['expires_at'] = min(self.remote_queue['expires_at'], msg['expires_at'])
+        else:
+            self.remote_queue = dict(msg)
+        self.buddy.received[key] = monotonic() + 30
+        self.buddy.acknowledge(msg, True)
+        self.advance_remote()
+
+    def advance_remote(self):
+        import time
+        now = monotonic()
+        if self.remote_current and now >= self.remote_until:
+            self.remote_current = None
+        if not self.remote_queue or self.remote_current:
+            return
+        queued = self.remote_queue
+        if (not self.buddy.ready or not self.buddy.relation or queued['relation_id'] != self.buddy.relation['id']
+                or queued['expires_at'] <= time.time() + self.buddy.clock_offset or self.config.paused or not self.isVisible()):
+            self.remote_queue = None
+            return
+        if self.dragging or self.dialog or now < self.reaction_until:
+            return
+        if len(self.remote_plays) == 3 and now - self.remote_plays[0] < 8:
+            self.remote_queue = None
+            return
+        self.remote_queue = None
+        self.remote_plays.append(now)
+        self.remote_current = {'action': 'receive_' + queued['action'], 'count': queued['count']}
+        self.remote_started, self.remote_until = now, now + 1.1
+        self.remote_message = ('被捏捏脸' if queued['action'] == 'pinch' else '被轻轻捶了一下') + f" ×{queued['count']}"
+        if self.config.remote_sound:
+            QApplication.beep()
+        self.update()
+
+    def send_animation(self, action, count):
+        if self.dragging or self.dialog or monotonic() < self.reaction_until:
+            return
+        self.remote_current = {'action': 'send_' + action, 'count': count}
+        self.remote_started = monotonic()
+        self.remote_until = self.remote_started + 0.8
+        self.remote_message = ''
+        self.update()
+
+    def hideEvent(self, event):
+        if hasattr(self, 'buddy'):
+            self.clear_remote()
+            self.buddy.visible = False
+            if self.buddy.ready:
+                self.buddy.profile()
+        super().hideEvent(event)
+
+    def showEvent(self, event):
+        if hasattr(self, 'buddy'):
+            self.buddy.visible = True
+            if self.buddy.ready:
+                self.buddy.profile()
+        super().showEvent(event)
 
     def write_config(self):
         if self.persist:
@@ -242,6 +366,11 @@ class Pet(QWidget):
         self.setWindowFlags(flags)
         self.setFixedSize(round(280 * self.config.scale / 100), round(280 * self.config.scale / 100))
         self.setWindowOpacity(self.config.opacity / 100)
+        icon = QIcon(character_icon(self.config.character))
+        self.setWindowIcon(icon)
+        self.tray.setIcon(icon)
+        if hasattr(self, 'buddy'):
+            self.buddy.update_config(self.config)
         self.hovered = False
         self.clicked_until = 0.0
         self.pass_action.setChecked(self.config.click_through)
@@ -267,7 +396,7 @@ class Pet(QWidget):
         self.clicked_until = now + self.config.bubble_seconds
         if self.config.interactive:
             self.reaction_until = now + 2.5
-            messages = ("喵～收到你的摸摸啦", "你认真工作，我认真陪你", "累了就伸个懒腰吧", "有我在，慢慢来就好")
+            messages = ("收到你的摸摸啦", "你认真工作，我认真陪你", "累了就伸个懒腰吧", "有我在，慢慢来就好")
             self.reaction_message = messages[self.reaction_index % len(messages)]
             self.reaction_index += 1
         self.last_activity = now
@@ -310,6 +439,7 @@ class Pet(QWidget):
         self.save_timer.stop()
         self.click_timer.stop()
         self.dialog = SettingsDialog(self.config)
+        self.clear_remote()
         self.dialog.scale.valueChanged.connect(self.resize_pet)
         self.dialog.opacity.valueChanged.connect(lambda value: self.setWindowOpacity(value / 100))
         accepted = False
@@ -350,6 +480,7 @@ class Pet(QWidget):
     def animate(self):
         if self.isVisible():
             self.phase += 1
+            self.advance_remote()
             now = monotonic()
             local = self.mapFromGlobal(QCursor.pos())
             over_cat = self.cat_contains(local)
@@ -367,120 +498,43 @@ class Pet(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.scale(self.config.scale / 100, self.config.scale / 100)
-        fur, cream = PALETTES[self.config.color]
-        ink = QColor("#55483E")
-        def ellipse(x, y, w, h, color):
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(color))
-            p.drawEllipse(QRectF(x, y, w, h))
+        _, cream = PALETTES[self.config.color]
         def text(rect, content, size, color, bold=False):
             p.setPen(QColor(color))
             p.setFont(QFont("Microsoft YaHei UI", size, QFont.Weight.Bold if bold else QFont.Weight.Normal))
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, content)
         now = monotonic()
         reacting = self.config.interactive and now < self.reaction_until
-        waving = self.config.interactive and (reacting or (self.phase % 760 < 55 and self.phase > 55))
         if self.show_bubble(now):
             p.setPen(QPen(QColor("#E9E2D7"), 1))
-            p.setBrush(QColor("#FFFCF6"))
+            p.setBrush(QColor(cream))
             p.drawRoundedRect(QRectF(20, 8, 240, 94), 22, 22)
             p.setPen(Qt.PenStyle.NoPen)
             p.drawPolygon(QPolygonF([QPointF(124, 100), QPointF(140, 114), QPointF(151, 100)]))
             caption = "距离下班还有" if self.snapshot.state == "working" else "今天辛苦啦" if self.snapshot.state == "done" else "好好享受今天"
             text(QRectF(20, 16, 240, 25), caption, 10, "#9A8977")
             text(QRectF(20, 40, 240, 42), self.snapshot.display, 24, "#55483E", True)
-            foot = "快了快了，准备收工" if self.snapshot.state == "working" and self.snapshot.seconds <= 1800 else "小猫陪你，慢慢来" if self.snapshot.state == "working" else "生活时间，现在开始"
+            foot = "快了快了，准备收工" if self.snapshot.state == "working" and self.snapshot.seconds <= 1800 else "搭子陪你，慢慢来" if self.snapshot.state == "working" else "生活时间，现在开始"
             if self.config.interactive:
                 if self.dragging:
-                    foot = "喵！我们要搬去哪里呀"
+                    foot = "我们要搬去哪里呀"
                 elif reacting:
                     foot = self.reaction_message
                 elif self.hovered:
                     foot = "我在呢，陪你一起等下班"
             text(QRectF(20, 79, 240, 18), foot, 8, "#A29180")
-        ellipse(69, 251, 145, 14, "#20000000")
-        p.save()
-        p.translate(0, math.sin(self.phase / 14) * 2)
-        if self.dragging and self.config.interactive:
-            p.translate(141, 154)
-            p.rotate(math.sin(self.phase / 3) * 6)
-            p.translate(-141, -154)
-        # Curled tail, body, paws, then a large expressive head.
-        p.setPen(QPen(QColor(fur), 18, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        tail = QPainterPath(QPointF(192, 237))
-        tail.cubicTo(240, 247, 239, 195 + math.sin(self.phase / (4 if reacting else 12)) * (12 if reacting else 7), 218, 207)
-        p.drawPath(tail)
-        ellipse(93, 186, 98, 70, fur)
-        ellipse(113, 205, 57, 47, cream)
-        ellipse(86, 241, 43, 17, fur)
-        ellipse(154, 241, 43, 17, fur)
-        # The head gently tilts towards the pointer, independently of the body.
-        p.save()
-        if self.config.interactive:
-            tilt = self.gaze.x() * 5 if self.hovered else math.sin(self.phase / 42) * 3
-            if reacting:
-                tilt = math.sin(self.phase / 8) * 7
-            p.translate(141, 196)
-            p.rotate(tilt)
-            p.translate(-141, -196)
-        p.setPen(QPen(ink, 2.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        p.setBrush(QColor(fur))
-        p.drawPolygon(QPolygonF([QPointF(85, 168), QPointF(84, 116), QPointF(123, 143)]))
-        p.drawPolygon(QPolygonF([QPointF(161, 143), QPointF(199, 116), QPointF(198, 168)]))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor("#E9A59C"))
-        p.drawPolygon(QPolygonF([QPointF(92, 145), QPointF(91, 129), QPointF(108, 144)]))
-        p.drawPolygon(QPolygonF([QPointF(177, 144), QPointF(192, 129), QPointF(192, 146)]))
-        ellipse(75, 139, 132, 94, fur)
-        ellipse(101, 181, 80, 45, cream)
-        ellipse(86, 184, 22, 10, "#E8A499")
-        ellipse(177, 184, 22, 10, "#E8A499")
-        p.setPen(QPen(ink, 3.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        blink = self.phase % 95 in (0, 1, 2, 3)
-        happy = reacting or (self.snapshot.state in ("done", "rest") and not self.hovered)
-        for x in (113, 169):
-            if self.dragging and self.config.interactive:
-                p.drawEllipse(QRectF(x - 4, 171, 8, 12))
-            elif blink or happy:
-                path = QPainterPath(QPointF(x - 5, 178))
-                path.quadTo(x, 172 if happy else 180, x + 5, 178)
-                p.drawPath(path)
-            else:
-                # Bright eyes and small pupils make the gaze readable at 100%.
-                ellipse(x - 7, 169, 14, 19, "#FFF9EF")
-                dx = self.gaze.x() * 3.5 if self.config.interactive else 0
-                dy = self.gaze.y() * 3 if self.config.interactive else 0
-                ellipse(x - 3 + dx, 173 + dy, 6, 10, "#55483E")
-                ellipse(x - 1 + dx, 174 + dy, 2, 3, "#FFFFFF")
-                p.setPen(QPen(ink, 3.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        ellipse(138, 186, 7, 5, "#B27770")
-        p.setPen(QPen(ink, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        mouth = QPainterPath(QPointF(132, 195))
-        mouth.quadTo(137, 202, 142, 193)
-        mouth.quadTo(147, 202, 152, 195)
-        p.drawPath(mouth)
-        for x, end in ((84, 67), (199, 216)):
-            p.drawLine(QPointF(x, 185), QPointF(end, 181))
-            p.drawLine(QPointF(x, 192), QPointF(end, 195))
-        p.restore()
-        if waving:
-            p.save()
-            p.translate(199, 221)
-            p.rotate(-30 + math.sin(self.phase / 3) * 18)
-            ellipse(-9, -27, 22, 39, fur)
-            ellipse(-4, -24, 12, 13, "#E8A499")
-            p.restore()
-        p.restore()
-        if reacting:
-            p.save()
-            p.translate(209, 139 - (1 - (self.reaction_until - now) / 2.5) * 20)
+        action = self.remote_current['action'] if self.remote_current else ''
+        if self.dragging or self.dialog or reacting:
+            action = ''
+        progress = min(1.0, max(0.0, (now - self.remote_started) / max(0.01, self.remote_until - self.remote_started)))
+        draw_character(p, self.config.character, self.phase, self.gaze, self.hovered,
+                       reacting or self.snapshot.state in ('done', 'rest') and not self.hovered,
+                       self.dragging, action, progress, self.config.interactive)
+        if self.config.remote_text and self.remote_current and self.remote_message and action.startswith('receive_'):
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor("#E79799"))
-            heart = QPainterPath(QPointF(0, 4))
-            heart.cubicTo(-15, -6, -8, -15, 0, -8)
-            heart.cubicTo(8, -15, 15, -6, 0, 4)
-            p.drawPath(heart)
-            p.restore()
+            p.setBrush(QColor('#FFFCF6'))
+            p.drawRoundedRect(QRectF(39, 267, 202, 13), 6, 6)
+            text(QRectF(39, 265, 202, 15), self.remote_message, 8, '#9A745D')
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -564,6 +618,9 @@ class Pet(QWidget):
             self.quit()
 
     def quit(self):
+        self.buddy.stop()
+        if self.buddy_dialog:
+            self.buddy_dialog.hide()
         self.config.x, self.config.y = self.x(), self.y()
         self.write_config()
         self.tray.hide()
@@ -571,15 +628,24 @@ class Pet(QWidget):
 
 
 def main():
+    import argparse
+    import re
+    parser = argparse.ArgumentParser(description='下班搭子 · Windows 桌面宠物')
+    parser.add_argument('--profile', help='独立本机配置名，供双窗口联调使用')
+    args = parser.parse_args()
+    if args.profile:
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,32}', args.profile):
+            parser.error('profile 只能使用 1–32 位字母、数字、下划线或短横线')
+        os.environ['OFFWORK_HOME'] = str(data_dir() / 'profiles' / args.profile)
     app = QApplication(sys.argv)
     app.setApplicationName("OffworkPet")
     app.setQuitOnLastWindowClosed(False)
-    lock_dir = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation))
+    lock_dir = data_dir()
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock = QLockFile(str(lock_dir / "offwork-pet.lock"))
     lock.setStaleLockTime(0)
     if not lock.tryLock(100):
-        QMessageBox.information(None, "下班搭子已运行", "小猫已经在桌面上啦，可以从任务栏托盘打开设置。")
+        QMessageBox.information(None, "下班搭子已运行", "宠物已经在桌面上啦，可以从任务栏托盘打开设置。")
         return
     config, warning = load_config()
     pet = Pet(config)

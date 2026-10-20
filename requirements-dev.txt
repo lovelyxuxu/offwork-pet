@@ -1,0 +1,4 @@
+-r requirements.txt
+-r server/requirements.txt
+httpx>=0.27,<1
+websockets>=13,<16

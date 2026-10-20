@@ -1,5 +1,6 @@
 """Widget integration checks; use a Windows desktop for native font rendering."""
 from time import monotonic
+import time
 import unittest
 from unittest.mock import patch
 
@@ -22,6 +23,7 @@ class GuiTests(unittest.TestCase):
         self.pet.tick_timer.stop()
 
     def tearDown(self):
+        self.pet.buddy.stop()
         self.pet.click_timer.stop()
         self.pet.save_timer.stop()
         self.pet.tray.hide()
@@ -130,6 +132,54 @@ class GuiTests(unittest.TestCase):
                     self.pet.reaction_until = monotonic() + 2 if state == "pet" else 0
                     self.pet.dragging = state == "drag"
                     self.assertFalse(self.pet.grab().isNull())
+
+
+    def test_local_mode_does_not_connect_and_characters_are_selectable(self):
+        self.assertFalse(self.pet.buddy.enabled)
+        self.assertIsNone(self.pet.buddy.socket)
+        self.assertIsNone(self.pet.buddy.identity)
+        dialog = SettingsDialog(self.pet.config)
+        self.assertEqual(dialog.character.count(), 2)
+        for character in ('lulu', 'lumei'):
+            dialog.character.setCurrentIndex(dialog.character.findData(character))
+            self.assertEqual(dialog.result_config(self.pet.config).character, character)
+            self.pet.config.character = character
+            self.pet.apply_config()
+            self.assertFalse(self.pet.grab().isNull())
+        dialog.deleteLater()
+
+    def test_remote_expiry_dedup_and_local_action_priority(self):
+        self.pet.buddy.ready = True
+        self.pet.buddy.relation = {'id': 'relation', 'partner_id': 'other', 'character': 'lumei'}
+        self.pet.buddy.clock_offset = 0
+        event = {'action': 'pinch', 'action_id': 'one', 'relation_id': 'relation',
+                 'count': 2, 'expires_at': time.time() + 4}
+        with patch.object(self.pet.buddy, 'acknowledge') as ack:
+            self.pet.receive_remote({**event, 'expires_at': time.time() - 1})
+            ack.assert_called_with({**event, 'expires_at': unittest.mock.ANY}, False)
+            self.assertIsNone(self.pet.remote_current)
+            self.pet.dragging = True
+            self.pet.receive_remote(event)
+            self.assertIsNotNone(self.pet.remote_queue)
+            self.assertIsNone(self.pet.remote_current)
+            self.pet.dragging = False
+            self.pet.advance_remote()
+            self.assertEqual(self.pet.remote_current['count'], 2)
+            self.pet.receive_remote(event)
+            self.assertIsNone(self.pet.remote_queue)
+            self.pet.set_paused(True)
+            self.assertIsNone(self.pet.remote_current)
+
+    def test_remote_animation_budget(self):
+        self.pet.buddy.ready = True
+        self.pet.buddy.relation = {'id': 'relation', 'partner_id': 'other', 'character': 'lulu'}
+        self.pet.remote_plays.extend([monotonic()] * 3)
+        event = {'action': 'bonk', 'action_id': 'new', 'relation_id': 'relation',
+                 'count': 1, 'expires_at': time.time() + 4}
+        with patch.object(self.pet.buddy, 'acknowledge') as ack:
+            self.pet.receive_remote(event)
+            ack.assert_called_with(event, False)
+        self.assertIsNone(self.pet.remote_queue)
 
 
 if __name__ == "__main__":
