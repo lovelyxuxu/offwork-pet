@@ -18,14 +18,14 @@
 
 ## 双人互动
 
-客户端需连接同一台搭子服务，本仓库不内置公共服务地址。完整的服务运行、HTTPS 部署、双窗口联调和操作说明见 [联网与部署](docs/联网与部署.md)。
+客户端需连接同一台搭子服务，本仓库不内置公共服务地址。支持 HTTP + 服务器 IP，也支持 HTTPS。完整的服务运行、部署和联调说明见 [联网与部署](docs/联网与部署.md)。
 
 ```powershell
 python -m pip install -r server/requirements.txt
 python -m server --port 8765
 ```
 
-再分别运行 `python main.py --profile alice` 和 `python main.py --profile bob`，在两个搭子面板中填 `http://127.0.0.1:8765` 即可本机配对验证。两台不同电脑使用应部署 HTTPS 服务并填写同一个地址。
+再分别运行 `python main.py --profile alice` 和 `python main.py --profile bob`，在两个搭子面板中填 `http://127.0.0.1:8765` 即可本机配对验证。两台不同电脑也可直接填写相同的 `http://服务器IP:8765`，服务端需监听 `0.0.0.0` 并放行相应端口，无需域名。HTTP 不加密传输，HTTPS 可在以后配置。
 
 ## 运行
 

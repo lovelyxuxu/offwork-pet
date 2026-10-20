@@ -19,10 +19,8 @@ def normalize_endpoint(value):
     except ValueError:
         raise ValueError('服务端口不正确')
     if parsed.scheme not in ('https', 'http') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path:
-        raise ValueError('请输入服务根地址，例如 https://pet.example.com')
-    if parsed.scheme == 'http' and parsed.hostname not in ('127.0.0.1', 'localhost', '::1'):
-        raise ValueError('远程服务必须使用 HTTPS；HTTP 仅支持本机测试')
-    return value
+        raise ValueError('请输入 HTTP 或 HTTPS 根地址，例如 http://服务器IP:8765')
+    return parsed.geturl()
 
 
 class Blob(ctypes.Structure):

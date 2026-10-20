@@ -15,6 +15,8 @@ class CredentialTests(unittest.TestCase):
 
     def test_endpoint_validation(self):
         self.assertEqual(normalize_endpoint(' http://127.0.0.1:8765/ '), 'http://127.0.0.1:8765')
-        for bad in ('http://example.com', 'https://user:secret@example.com', 'https://example.com/path', 'file:///tmp', 'https://example.com?token=1'):
+        for endpoint in ('http://192.0.2.10:8765', 'http://example.com', 'http://[2001:db8::1]:8765', 'https://example.com'):
+            self.assertEqual(normalize_endpoint(endpoint), endpoint)
+        for bad in ('https://user:secret@example.com', 'https://example.com/path', 'file:///tmp', 'https://example.com?token=1'):
             with self.assertRaises(ValueError):
                 normalize_endpoint(bad)
