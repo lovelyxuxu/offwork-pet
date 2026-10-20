@@ -24,7 +24,7 @@ class Config:
     scale: int = 100
     topmost: bool = True
     opacity: int = 100
-    bubble_mode: str = "always"
+    bubble_mode: str = "hover_click"
     bubble_seconds: int = 6
     interactive: bool = True
     reminders: bool = True
