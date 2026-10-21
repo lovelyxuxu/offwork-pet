@@ -2,6 +2,8 @@
 
 待在 Windows 桌面角落的噜噜或噜妹，陪你等下班，也能与一位搭子远程互动。
 
+`v0.4.0-preview.1`：噜噜已接入 v5 形象的透明 3D 预渲染动画，支持待机呼吸/眨眼、摸头、拖动及远程动作回应；噜妹保留二维形象。设置中可确认当前形象，窗口标题显示版本号。本版不支持自由旋转的实时 3D 视角。
+
 ## 当前功能
 
 - 噜噜、噜妹两个可独立选择的水豚角色，支持双方同款。来源及同人适配说明见 [形象来源](docs/形象来源.md)。
@@ -53,7 +55,9 @@ python -m venv .venv
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-生成 `dist\OffworkPet\OffworkPet.exe`。分发时复制整个 `OffworkPet` 文件夹；目标电脑无需安装 Python。构建依赖和产物不提交 Git。
+生成 `dist\v0.4.0-preview.1-3D\OffworkPet\OffworkPet.exe` 和 `dist\OffworkPet-v0.4.0-preview.1-3D.zip`。发布包包含 `版本说明.txt` 和运行所需素材，不包含 `docs`、建模工程或个人配置。目标电脑无需安装 Python 或 Blender。升级时先退出旧宠物，再完整解压并启动新版。构建依赖和产物不提交 Git。
+
+透明动画素材已放在 `offwork_pet/assets/lulu3d`。`tools/render_lulu_sprites.py` 是从 v5 建模工程渲染的辅助脚本，需要另外准备脚本指定的 `.blend` 和 `design.json`；建模中间文件未随仓库发布。普通运行和打包直接使用现成 PNG，无需 Blender。
 
 ## 测试
 
@@ -71,4 +75,10 @@ python tests/integration_network.py
 
 如果改动源代码或移动应用目录，请重新开启一次“登录 Windows 时自动启动”，以更新启动路径。卸载前先关闭该选项。
 
-界面使用 PySide6 / Qt，遵循其适用许可；分发应保留随包 Qt/PySide6 许可文件。项目尚未指定开源许可证。
+## 许可证与隐私
+
+项目自有程序代码采用 [MIT 许可证](LICENSE)，第三方模型及其衍生动画素材保留原许可和署名，详见 [第三方说明](THIRD_PARTY_NOTICES.md) 与 [形象来源](docs/形象来源.md)。角色名称与形象的相关权利不因代码开源而转移。
+
+界面使用 PySide6 / Qt，遵循其适用许可；分发应保留随包 Qt/PySide6 许可文件。
+
+仓库不提供公共搭子服务。使用双人互动需自行部署；公网连接建议配置 HTTPS/WSS，以加密设备凭证和互动数据。请勿提交本机服务器记录、`.env`、个人配置、设备身份、数据库或密钥。相关本机文件已加入 `.gitignore`。

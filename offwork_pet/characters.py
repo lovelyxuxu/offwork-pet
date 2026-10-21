@@ -1,14 +1,19 @@
-"""Scalable, component-drawn Lulu/Lumei fan adaptation. Sources: docs/形象来源.md."""
+"""Rendered 3D Lulu and scalable vector Lumei. Sources: docs/形象来源.md."""
 import math
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
+from .sprites import draw_lulu
 
-CHARACTERS = {'lulu': '噜噜', 'lumei': '噜妹'}
+CHARACTERS = {'lulu': '噜噜（3D 动画）', 'lumei': '噜妹（二维）'}
 
 
 def draw_character(p, character='lulu', phase=0, gaze=None, hovered=False, happy=False,
-                   dragging=False, action='', progress=0, interactive=True):
+                   dragging=False, action='', progress=0, interactive=True, reaction_progress=None):
     """Draw inside a 280 x 280 logical canvas; leave y < 110 for the bubble."""
+    if character == 'lulu':
+        draw_lulu(p, phase, gaze, hovered, happy, dragging, action, progress, interactive,
+                  reaction_progress)
+        return
     gaze = gaze or QPointF()
     fur, edge, muzzle = '#FFD65D', '#B67C2F', '#F7A847'
     p.save()

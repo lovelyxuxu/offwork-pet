@@ -1,4 +1,4 @@
-"""Native transparent desktop cat, drawn with Qt (no external image assets)."""
+"""Native transparent desktop pet with rendered 3D Lulu and vector Lumei."""
 from dataclasses import replace
 from collections import deque
 from datetime import datetime
@@ -19,6 +19,8 @@ from .core import Config, ReminderTracker, bubble_visible, countdown, data_dir, 
 from .buddy import BuddyClient
 from .buddy_ui import BuddyDialog
 from .characters import CHARACTERS, character_icon, draw_character
+from .sprites import contains as sprite_contains
+from . import __version__
 
 PALETTES = {"奶油橘": ("#F5C997", "#FFF0D9"), "薄荷绿": ("#A9D5BB", "#E8F6EC"), "云朵蓝": ("#B3CDEC", "#ECF3FF")}
 BUBBLE_MODES = {"始终展示": "always", "鼠标悬停时展示": "hover", "点击宠物后展示": "click", "悬停或点击时展示": "hover_click", "始终隐藏": "hidden"}
@@ -59,7 +61,7 @@ def set_startup(enabled):
 class SettingsDialog(QDialog):
     def __init__(self, config, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("下班搭子 · 设置")
+        self.setWindowTitle(f"下班搭子 · 设置 · v{__version__}")
         self.setMinimumWidth(430)
         self.setStyleSheet("QDialog {background:#FAF8F4;} QLabel,QCheckBox {color:#453F39;font-size:13px;} QPushButton {padding:7px 16px;} QTimeEdit,QComboBox {padding:5px;}")
         root = QVBoxLayout(self)
@@ -194,7 +196,7 @@ class Pet(QWidget):
         self.reminders = ReminderTracker()
         self.snapshot = countdown(datetime.now(), config)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setWindowTitle("下班搭子")
+        self.setWindowTitle(f"下班搭子 · v{__version__}")
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.tray = QSystemTrayIcon(self)
@@ -386,6 +388,8 @@ class Pet(QWidget):
     def cat_contains(self, point):
         scale = self.config.scale / 100
         x, y = point.x() / scale, point.y() / scale
+        if self.config.character == 'lulu':
+            return sprite_contains(QPointF(x, y))
         return (((x - 141) / 71) ** 2 + ((y - 181) / 52) ** 2 <= 1
                 or QRectF(84, 117, 115, 34).contains(QPointF(x, y))
                 or QRectF(86, 211, 111, 47).contains(QPointF(x, y))
@@ -529,7 +533,8 @@ class Pet(QWidget):
         progress = min(1.0, max(0.0, (now - self.remote_started) / max(0.01, self.remote_until - self.remote_started)))
         draw_character(p, self.config.character, self.phase, self.gaze, self.hovered,
                        reacting or self.snapshot.state in ('done', 'rest') and not self.hovered,
-                       self.dragging, action, progress, self.config.interactive)
+                       self.dragging, action, progress, self.config.interactive,
+                       reaction_progress=max(0, min(1, 1 - (self.reaction_until - now) / 2.5)) if reacting else None)
         if self.config.remote_text and self.remote_current and self.remote_message and action.startswith('receive_'):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor('#FFFCF6'))
@@ -639,6 +644,7 @@ def main():
         os.environ['OFFWORK_HOME'] = str(data_dir() / 'profiles' / args.profile)
     app = QApplication(sys.argv)
     app.setApplicationName("OffworkPet")
+    app.setApplicationVersion(__version__)
     app.setQuitOnLastWindowClosed(False)
     lock_dir = data_dir()
     lock_dir.mkdir(parents=True, exist_ok=True)

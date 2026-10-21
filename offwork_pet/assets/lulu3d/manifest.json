@@ -1,0 +1,47 @@
+{
+  "format": 1,
+  "size": [
+    320,
+    400
+  ],
+  "draw_rect": [
+    66,
+    91,
+    148,
+    185
+  ],
+  "clips": {
+    "idle": {
+      "frames": 40,
+      "fps": 10
+    },
+    "pet": {
+      "frames": 20,
+      "fps": 16
+    },
+    "drag": {
+      "frames": 16,
+      "fps": 12
+    },
+    "receive_pinch": {
+      "frames": 16,
+      "fps": 16
+    },
+    "receive_bonk": {
+      "frames": 16,
+      "fps": 16
+    },
+    "send_pinch": {
+      "frames": 16,
+      "fps": 16
+    },
+    "send_bonk": {
+      "frames": 16,
+      "fps": 16
+    }
+  },
+  "source": "https://sketchfab.com/3d-models/a5747f74f0034470a2029a85f6e9c11d",
+  "author": "Spencer0131",
+  "license": "CC-BY-4.0",
+  "changes": "v5 reference face, colors, optimized surface, head/body animation and transparent rendering"
+}

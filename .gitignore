@@ -14,3 +14,15 @@ outputs/
 *.sqlite3
 *.sqlite3-*
 identity*.json
+
+# Local deployment notes and original working assets are not public source.
+/AGENTS.md
+/docs/server-access.md
+/docs/服务器部署.md
+/docs/水豚噜噜素材/
+*.clixml
+*.pem
+*.key
+*.pfx
+*.p12
+identity*.tmp
