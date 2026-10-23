@@ -55,6 +55,33 @@ class CountdownTests(unittest.TestCase):
                 self.assertEqual(config.bubble_mode, expected)
                 self.assertEqual(config.off_time, "17:30")
 
+    def test_pointer_look_preference_roundtrip_and_legacy_default(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / 'config.json'
+            path.write_text('{"off_time": "17:30"}', encoding='utf-8')
+            config, warning = load_config(path)
+            self.assertFalse(warning)
+            self.assertTrue(config.pointer_look_enabled)
+            self.assertEqual(config.off_time, '17:30')
+            config.pointer_look_enabled = False
+            save_config(config, path)
+            self.assertEqual(load_config(path), (config, ''))
+        for invalid in (0, 1, 'false', None):
+            with self.subTest(value=invalid), self.assertRaises(ValueError):
+                validate(Config(pointer_look_enabled=invalid))
+
+    def test_legacy_server_address_is_ignored_without_resetting_settings(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "config.json"
+            path.write_text('{"relay_url": "http://old.example.com", "off_time": "17:30", "network_enabled": true}',
+                            encoding="utf-8")
+            config, warning = load_config(path)
+            self.assertEqual(warning, "")
+            self.assertEqual(config.off_time, "17:30")
+            self.assertTrue(config.network_enabled)
+            save_config(config, path)
+            self.assertNotIn('relay_url', path.read_text(encoding="utf-8"))
+
     def test_bubble_modes_and_click_expiry(self):
         for mode in ("always", "hover", "click", "hover_click", "hidden"):
             with self.subTest(mode=mode):

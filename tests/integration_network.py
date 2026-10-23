@@ -52,8 +52,8 @@ with TemporaryDirectory() as temporary:
                 if time.monotonic() > deadline:
                     raise
                 time.sleep(0.05)
-        a = Pet(Config(character='lulu', relay_url=endpoint), persist=False)
-        b = Pet(Config(character='lumei', relay_url=endpoint), persist=False)
+        a = Pet(Config(character='lulu'), persist=False, relay_endpoint=endpoint)
+        b = Pet(Config(character='lumei'), persist=False, relay_endpoint=endpoint)
         a.move(100, 200)
         b.move(450, 200)
         a.buddy.persist = b.buddy.persist = True
@@ -71,10 +71,13 @@ with TemporaryDirectory() as temporary:
         until(lambda: a.buddy.relation and b.buddy.relation and a.buddy.status == 'available', 'Pairing not synchronized')
         assert a.buddy.relation['character'] == 'lumei'
         relation = a.buddy.relation['id']
-        a.buddy.queue_action('pinch')
-        a.buddy.queue_action('pinch')
-        until(lambda: b.remote_current and b.remote_current['action'] == 'receive_pinch', 'Remote animation did not start')
-        assert b.remote_current['count'] == 2
+        a.open_actions(1)
+        app.processEvents()
+        label = next(item['label'] for item in a.buddy.relation['capabilities']['interactions'] if item['id'] == 'pinch')
+        next(button for button in a.action_panel.remote_buttons if button.text() == label).click()
+        assert a.action_panel.isVisible(), 'Interaction shelf closed after choosing an action'
+        until(lambda: b.runtime.current == 'cheek_reply', 'Remote package animation did not start')
+        assert b.runtime.context['source'] == 'remote'
         until(lambda: '对方客户端已接收' in notices, 'Delivery not acknowledged')
         a.snapshot = countdown(datetime(2026, 10, 20, 17, 32), a.config)
         b.snapshot = a.snapshot
@@ -86,7 +89,7 @@ with TemporaryDirectory() as temporary:
         a.buddy_dialog.hide()
         b.set_paused(True)
         until(lambda: a.buddy.status == 'paused', 'Pause not visible on A')
-        assert b.remote_current is None and b.remote_queue is None
+        assert b.runtime.current is None and not b.runtime.queue
         b.set_paused(False)
         until(lambda: a.buddy.status == 'available', 'Resume not synchronized')
         b.hide()
@@ -106,15 +109,15 @@ with TemporaryDirectory() as temporary:
         until(lambda: b.buddy.ready and b.buddy.relation is None and a.buddy.relation is None, 'Offline unlink did not synchronize')
         assert not b.buddy.identity.record['pending_unlink']
         # An invalid server identity must stop retrying instead of looping forever.
-        bad_config = Config(relay_url=endpoint)
+        bad_config = Config()
         os.environ['OFFWORK_HOME'] = str(Path(temporary) / 'invalid')
         invalid = IdentityStore(endpoint)
         invalid.set_identity({'device_id': 'invalid', 'token': 'invalid-token'})
-        bad = BuddyClient(bad_config)
+        bad = BuddyClient(bad_config, endpoint=endpoint)
         bad.start()
         until(lambda: not bad.enabled and '身份失效' in bad.connection_text, 'Invalid identity was not rejected')
         bad.stop()
-        print('PASS: real HTTP registration + DPAPI, two Qt clients, independent characters, pairing, merged action, ack, pause, hide, reconnect, offline unlink', flush=True)
+        print('PASS: v2 HTTP + DPAPI, independent character packages, capability discovery, interaction, ack, pause, hide, reconnect, offline unlink', flush=True)
     finally:
         for pet in (a, b):
             if pet:

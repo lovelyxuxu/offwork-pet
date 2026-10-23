@@ -14,9 +14,9 @@ class Config:
     override_date: str = ""
     override_time: str = "18:00"
     color: str = "奶油橘"
-    character: str = "lulu"
-    relay_url: str = ""
+    character: str = "noah-lulu"
     network_enabled: bool = False
+    auto_update_check: bool = True
     paused: bool = False
     remote_text: bool = True
     remote_sound: bool = False
@@ -27,7 +27,16 @@ class Config:
     bubble_mode: str = "hover_click"
     bubble_seconds: int = 6
     interactive: bool = True
+    pointer_look_enabled: bool = True
+    autonomous_enabled: bool = True
+    exploration_enabled: bool = True
+    internal_surfaces: bool = False
+    personality_enabled: bool = True
+    activity_min_seconds: int = 20
+    activity_max_seconds: int = 60
+    roaming_mode: str = "free"
     reminders: bool = True
+    rituals_enabled: bool = True
     sound: bool = False
     click_through: bool = False
     x: int | None = None
@@ -58,17 +67,22 @@ def validate(config: Config) -> Config:
         raise ValueError("未知气泡展示方式")
     if type(config.bubble_seconds) is not int or not 2 <= config.bubble_seconds <= 30:
         raise ValueError("点击展示时长必须在 2 到 30 秒之间")
+    if (type(config.activity_min_seconds) is not int or type(config.activity_max_seconds) is not int
+            or not 5 <= config.activity_min_seconds <= config.activity_max_seconds <= 3600):
+        raise ValueError("自主活动间隔须在 5 到 3600 秒之间，最短间隔不能大于最长间隔")
+    if config.roaming_mode not in ('off', 'stay', 'free'):
+        raise ValueError("未知自主活动范围")
+    if type(config.autonomous_enabled) is not bool:
+        raise ValueError("自主活动开关必须为布尔值")
     if config.color not in ("奶油橘", "薄荷绿", "云朵蓝"):
         raise ValueError("未知配色")
-    if config.character not in ('lulu', 'lumei'):
-        raise ValueError('未知形象')
-    if not isinstance(config.relay_url, str) or len(config.relay_url) > 500:
-        raise ValueError('服务地址不正确')
+    if not isinstance(config.character, str) or len(config.character) > 96:
+        raise ValueError('角色标识不正确')
     if not isinstance(config.buddy_note, str) or len(config.buddy_note) > 24:
         raise ValueError('搭子备注最多 24 字')
     if config.override_date:
         datetime.strptime(config.override_date, "%Y-%m-%d")
-    for name in ("topmost", "interactive", "reminders", "sound", "click_through", 'network_enabled', 'paused', 'remote_text', 'remote_sound'):
+    for name in ("topmost", "interactive", "pointer_look_enabled", "reminders", "rituals_enabled", "sound", "click_through", 'network_enabled', 'paused', 'remote_text', 'remote_sound', 'auto_update_check', 'exploration_enabled', 'internal_surfaces', 'personality_enabled'):
         if type(getattr(config, name)) is not bool:
             raise ValueError("开关配置必须为布尔值")
     for name in ("x", "y"):

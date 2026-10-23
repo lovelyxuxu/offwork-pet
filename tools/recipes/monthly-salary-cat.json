@@ -1,0 +1,20 @@
+{
+  "version": "1.1.1",
+  "description": "会拍一拍、额、向左或向右飘过、蛐蛐、臭、生气、无聊和意念回复的月薪猫。原图集作者 vjokaye。",
+  "actionRepeat": 3,
+  "queueTtlMs": 8000,
+  "base": {"row": 8, "count": 6, "durationMs": 200, "firstHoldMs": 3400, "lastHoldMs": 1200},
+  "headRegion": [38, 12, 112, 88],
+  "touchAction": "chair_rest",
+  "actions": [
+    {"id": "desk_work", "row": 8, "count": 6, "durationMs": 240, "label": "额", "remoteLabel": "额"},
+    {"id": "chair_rest", "row": 0, "count": 6, "durationMs": 280, "label": "拍一拍", "remoteLabel": "拍一拍", "autonomousWeight": 3},
+    {"id": "walk_right", "row": 1, "count": 8, "durationMs": 170, "label": "向右飘过", "autonomousWeight": 2, "motion": {"direction": 1, "speed": 75}},
+    {"id": "walk_left", "row": 2, "count": 8, "durationMs": 170, "label": "向左飘过", "autonomousWeight": 2, "motion": {"direction": -1, "speed": 75}},
+    {"id": "cozy_company", "row": 3, "count": 4, "durationMs": 320, "label": "蛐蛐", "remoteLabel": "蛐蛐"},
+    {"id": "shy_hop", "row": 4, "count": 5, "durationMs": 250, "label": "臭", "remoteLabel": "臭"},
+    {"id": "little_grump", "row": 5, "count": 8, "durationMs": 220, "label": "生气", "remoteLabel": "生气"},
+    {"id": "phone_break", "row": 6, "count": 6, "durationMs": 300, "label": "无聊", "remoteLabel": "无聊", "autonomousWeight": 2},
+    {"id": "desk_stretch", "row": 7, "count": 6, "durationMs": 280, "label": "意念回复", "remoteLabel": "意念回复", "autonomousWeight": 3}
+  ]
+}

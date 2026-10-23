@@ -165,6 +165,60 @@ class ProtocolTests(unittest.TestCase):
             b.send_json({'type': 'ack', 'relation_id': relation, 'action_id': aid, 'accepted': True})
             self.assertEqual(self.receive(a, 'result', rid)['code'], 'unknown')
 
+    def v2_socket(self, identity):
+        return self.client.websocket_connect('/v2/connect', headers={'Authorization': 'Bearer '+identity['token']})
+
+    def capabilities(self, identifier='creator.robot', interaction='light_show', revision='rev-1'):
+        return {'packageId': identifier, 'packageVersion': '1.0.0', 'displayName': 'Creator robot',
+                'digest': 'a'*64, 'revision': revision,
+                'interactions': [{'id': interaction, 'label': 'Light show', 'order': 0}]}
+
+    def v2_pair(self, a, b):
+        self.assertTrue(self.command(a, 'profile', capabilities=self.capabilities('creator.cat', 'roll'), paused=False, visible=True)['ok'])
+        self.assertTrue(self.command(b, 'profile', capabilities=self.capabilities(), paused=False, visible=True)['ok'])
+        code = self.command(a, 'invite')['data']['code']
+        return self.command(b, 'redeem', code=code)['data']['relation']['id']
+
+    def test_v2_different_character_capabilities_and_stale_revision(self):
+        with self.v2_socket(self.a) as a, self.v2_socket(self.b) as b:
+            relation = self.v2_pair(a, b)
+            state = self.command(a, 'profile', capabilities=self.capabilities('creator.cat', 'roll'), paused=False, visible=True)['data']
+            self.assertEqual(state['relation']['capabilities']['interactions'][0]['id'], 'light_show')
+            aid, rid = uuid.uuid4().hex, uuid.uuid4().hex
+            a.send_json({'type': 'action', 'request_id': rid, 'relation_id': relation,
+                'interactionId': 'light_show', 'action_id': aid, 'capabilityRevision': 'rev-1'})
+            event = self.receive(b, 'action')
+            self.assertEqual(event['interactionId'], 'light_show')
+            self.assertNotIn('count', event)
+            b.send_json({'type': 'ack', 'relation_id': relation, 'action_id': aid, 'accepted': True, 'status': 'queued'})
+            self.assertEqual(self.receive(a, 'result', rid)['data']['status'], 'queued')
+            invalid = self.command(a, 'action', relation_id=relation, interactionId='light_show',
+                action_id=uuid.uuid4().hex, capabilityRevision='old')
+            self.assertEqual(invalid['code'], 'stale')
+            unsupported = self.command(a, 'action', relation_id=relation, interactionId='not_declared',
+                action_id=uuid.uuid4().hex, capabilityRevision='rev-1')
+            self.assertEqual(unsupported['code'], 'unsupported')
+
+    def test_v2_switch_cancels_pending_request_and_clears_removed_role(self):
+        with self.v2_socket(self.a) as a, self.v2_socket(self.b) as b:
+            relation = self.v2_pair(a, b)
+            aid, rid = uuid.uuid4().hex, uuid.uuid4().hex
+            a.send_json({'type': 'action', 'request_id': rid, 'relation_id': relation,
+                'interactionId': 'light_show', 'action_id': aid, 'capabilityRevision': 'rev-1'})
+            self.receive(b, 'action')
+            self.command(b, 'profile', capabilities=None, paused=False, visible=True)
+            self.assertEqual(self.receive(a, 'result', rid)['code'], 'stale')
+            state = self.command(a, 'profile', capabilities=self.capabilities('creator.cat', 'roll'), paused=False, visible=True)['data']
+            self.assertIsNone(state['relation']['capabilities'])
+            self.assertEqual(self.client.app.state.relay.pending, {})
+
+    def test_v2_rejects_malformed_capability_without_breaking_connection(self):
+        with self.v2_socket(self.a) as a:
+            value = self.capabilities()
+            value['interactions'].append(value['interactions'][0])
+            self.assertFalse(self.command(a, 'profile', capabilities=value, paused=False, visible=True)['ok'])
+            self.assertTrue(self.command(a, 'profile', capabilities=self.capabilities(), paused=False, visible=True)['ok'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -4,25 +4,31 @@ import time
 import uuid
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal
-from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
+from PySide6.QtNetwork import QAbstractSocket, QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWebSockets import QWebSocket
 
 from .credentials import IdentityStore, normalize_endpoint
+
+SERVICE_ENDPOINT = 'http://106.54.27.8'
 
 
 class BuddyClient(QObject):
     changed = Signal()
     notice = Signal(str)
     incoming = Signal(dict)
-    outgoing = Signal(str, int)
 
-    def __init__(self, config, parent=None, persist=True):
+    def __init__(self, config, parent=None, persist=True, *, endpoint=None):
         super().__init__(parent)
         self.config, self.persist = config, persist
+        # A constructor override isolates local integration tests; it is not a user setting.
+        self.endpoint = normalize_endpoint(SERVICE_ENDPOINT if endpoint is None else endpoint)
+        self.capabilities_provider = lambda: None
         self.identity = None
         self.socket = None
         self.http = QNetworkAccessManager(self)
         self.registration = None
+        self.preflight = None
+        self.service_checked = False
         self.enabled = False
         self.connected = False
         self.ready = False
@@ -35,7 +41,6 @@ class BuddyClient(QObject):
         self.last_message = 0.0
         self.clock_offset = 0.0
         self.retry_seconds = 1
-        self.batch = None
         self.received = {}
         self.heartbeat = QTimer(self)
         self.heartbeat.setInterval(10000)
@@ -50,9 +55,6 @@ class BuddyClient(QObject):
         self.deadlines.setInterval(500)
         self.deadlines.timeout.connect(self.expire_requests)
         self.deadlines.start()
-        self.batch_timer = QTimer(self)
-        self.batch_timer.setSingleShot(True)
-        self.batch_timer.timeout.connect(self.flush_action)
 
     def update_config(self, config):
         self.config = config
@@ -63,15 +65,15 @@ class BuddyClient(QObject):
         if self.enabled:
             return
         try:
-            endpoint = normalize_endpoint(self.config.relay_url)
-            self.identity = IdentityStore(endpoint)
+            self.identity = IdentityStore(self.endpoint)
             cached = self.identity.record.get('relation_cache')
             self.relation = cached if isinstance(cached, dict) and cached.get('id') == self.identity.record.get('relation_id') else None
         except (ValueError, OSError, UnicodeError) as error:
-            self.connection_text = f'无法读取连接设置：{error}'
+            self.connection_text = f'无法读取连接身份：{error}'
             self.changed.emit()
             return
         self.enabled = True
+        self.service_checked = False
         self.connect_service()
 
     def stop(self):
@@ -79,11 +81,12 @@ class BuddyClient(QObject):
         self.retry.stop()
         self.connect_timeout.stop()
         self.heartbeat.stop()
-        self.batch_timer.stop()
-        self.batch = None
         self.invitation = None
         if self.registration:
             old_reply, self.registration = self.registration, None
+            old_reply.abort()
+        if self.preflight:
+            old_reply, self.preflight = self.preflight, None
             old_reply.abort()
         self.connected = self.ready = False
         self.status = 'offline'
@@ -96,12 +99,18 @@ class BuddyClient(QObject):
         self.changed.emit()
 
     def connect_service(self):
-        if not self.enabled or self.registration or self.socket:
+        if not self.enabled or self.registration or self.preflight or self.socket:
             return
         self.connection_text = '正在连接…'
         self.changed.emit()
+        if not self.service_checked:
+            request = QNetworkRequest(QUrl(self.endpoint + '/health'))
+            request.setTransferTimeout(10000)
+            reply = self.preflight = self.http.get(request)
+            reply.finished.connect(lambda: self.checked_service(reply))
+            return
         if not self.identity.token:
-            request = QNetworkRequest(QUrl(self.identity.endpoint + '/v1/devices'))
+            request = QNetworkRequest(QUrl(self.identity.endpoint + '/v2/devices'))
             request.setHeader(QNetworkRequest.KnownHeaders.ContentTypeHeader, 'application/json')
             request.setTransferTimeout(10000)
             self.registration = self.http.post(request, b'{}')
@@ -114,10 +123,45 @@ class BuddyClient(QObject):
         socket.textMessageReceived.connect(lambda raw: self.on_message(socket, raw))
         socket.errorOccurred.connect(lambda _: self.socket_error(socket))
         endpoint = self.identity.endpoint.replace('https://', 'wss://', 1).replace('http://', 'ws://', 1)
-        request = QNetworkRequest(QUrl(endpoint + '/v1/connect'))
+        request = QNetworkRequest(QUrl(endpoint + '/v2/connect'))
         request.setRawHeader(b'Authorization', ('Bearer ' + self.identity.token).encode())
         socket.open(request)
         self.connect_timeout.start(12000)
+
+    def block_service(self, message='搭子服务正在升级，暂时无法联网。请稍后再试。'):
+        self.config.network_enabled = False
+        self.stop()
+        self.connection_text = message
+        self.changed.emit()
+
+    def checked_service(self, reply):
+        if reply is not self.preflight:
+            reply.deleteLater()
+            return
+        self.preflight = None
+        try:
+            if not self.enabled:
+                return
+            if reply.error() != QNetworkReply.NetworkError.NoError:
+                status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+                if status in (404, 405):
+                    self.block_service()
+                    return
+                self.schedule_retry('暂时连不上搭子服务，稍后自动重试')
+                return
+            try:
+                data = json.loads(bytes(reply.readAll()))
+                supported = data.get('supported_protocols', [data.get('protocol')])
+                valid = data.get('ok') is True and isinstance(supported, list) and 2 in supported
+            except (ValueError, AttributeError, TypeError):
+                valid = False
+            if not valid:
+                self.block_service()
+                return
+            self.service_checked = True
+            self.connect_service()
+        finally:
+            reply.deleteLater()
 
     def abort_connect(self):
         if self.socket and not self.connected:
@@ -135,8 +179,18 @@ class BuddyClient(QObject):
             if not self.enabled:
                 return
             if reply.error() != QNetworkReply.NetworkError.NoError:
-                raise ValueError('无法连接服务，请检查服务地址和网络')
-            data = json.loads(bytes(reply.readAll()))
+                if reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute) == 404:
+                    self.block_service()
+                    return
+                raise ValueError('暂时无法连接搭子服务，请检查网络或稍后重试')
+            try:
+                data = json.loads(bytes(reply.readAll()))
+            except ValueError:
+                self.block_service()
+                return
+            if not isinstance(data, dict) or not isinstance(data.get('token'), str) or not isinstance(data.get('device_id'), str):
+                self.block_service()
+                return
             self.identity.set_identity(data)
             self.connect_service()
         except (ValueError, OSError, UnicodeError) as error:
@@ -183,8 +237,8 @@ class BuddyClient(QObject):
                     self.changed.emit()
             elif initial:
                 self.notice.emit(result.get('message', '无法同步状态'))
-        self.request('profile', {'paused': self.config.paused, 'visible': self.visible,
-                                 'character': self.config.character}, completed)
+        self.request('profile', {'paused': self.config.paused or getattr(self, 'focus_paused', False), 'visible': self.visible,
+                                 'capabilities': self.capabilities_provider()}, completed)
 
     def pulse(self):
         if self.connected:
@@ -197,8 +251,14 @@ class BuddyClient(QObject):
 
     def socket_error(self, socket):
         if socket is self.socket and not self.connected:
+            if '404' in socket.errorString():
+                self.block_service()
+                return
+            if socket.error() == QAbstractSocket.SocketError.ConnectionRefusedError:
+                self.connection_text = '搭子服务暂不可用，正在重试'
             # Some failed handshakes emit no disconnected signal.
             self.on_disconnected(socket)
+            self.changed.emit()
 
     def on_disconnected(self, socket):
         if socket is not self.socket:
@@ -211,14 +271,13 @@ class BuddyClient(QObject):
         self.status = 'offline'
         self.invitation = None
         self.heartbeat.stop()
-        self.batch_timer.stop()
-        self.batch = None
         self.fail_requests()
         if code in (4001, 4401):
             self.enabled = False
             self.connection_text = '该身份已在另一处连接' if code == 4001 else '设备身份失效，请核对服务或重置身份'
             self.changed.emit()
         elif self.enabled:
+            self.service_checked = False
             self.schedule_retry('连接中断，正在重连')
 
     def schedule_retry(self, message):
@@ -303,8 +362,6 @@ class BuddyClient(QObject):
         if previous != current:
             self.config.buddy_note = ''
             self.invitation = None
-            self.batch = None
-            self.batch_timer.stop()
         self.identity.record['relation_id'] = current
         self.identity.record['relation_cache'] = relation
         ended = data.get('ended_id', '')
@@ -350,8 +407,6 @@ class BuddyClient(QObject):
             return
         self.ready = False
         self.connection_text = '解除待同步'
-        self.batch_timer.stop()
-        self.batch = None
         self.changed.emit()
         if self.connected:
             self.request('unlink', {'relation_id': relation_id}, self.unlinked_pending)
@@ -360,24 +415,18 @@ class BuddyClient(QObject):
         if not self.ready or not self.relation or self.status != 'available' or self.identity.record.get('pending_unlink'):
             self.notice.emit('对方暂不接收互动或连接未就绪')
             return
-        if self.batch and self.batch['action'] != kind:
-            self.flush_action()
-        if not self.batch:
-            self.batch = {'action': kind, 'count': 0, 'relation_id': self.relation['id']}
-            self.batch_timer.start(350)
-        self.batch['count'] = min(5, self.batch['count'] + 1)
-
-    def flush_action(self):
-        batch, self.batch = self.batch, None
-        if not batch or not self.ready or not self.relation or batch['relation_id'] != self.relation['id']:
+        capabilities = self.relation.get('capabilities')
+        if not capabilities or not any(item['id'] == kind for item in capabilities['interactions']):
+            self.notice.emit('对方当前角色不支持该互动，或需要升级客户端')
             return
         action_id = uuid.uuid4().hex
-        self.outgoing.emit(batch['action'], batch['count'])
         self.notice.emit('正在发送…')
         def done(result):
-            self.notice.emit('对方客户端已接收' if result['ok'] else result.get('message', '未确认送达'))
-        self.request('action', {**batch, 'action_id': action_id}, done, timeout=7)
+            self.notice.emit(('对方客户端已排队' if result['data'].get('status') == 'queued' else '对方客户端已接收')
+                             if result['ok'] else result.get('message', '未确认送达'))
+        self.request('action', {'relation_id': self.relation['id'], 'interactionId': kind,
+            'capabilityRevision': capabilities['revision'], 'action_id': action_id}, done, timeout=7)
 
-    def acknowledge(self, msg, accepted):
+    def acknowledge(self, msg, accepted, status='started'):
         self.send({'type': 'ack', 'relation_id': msg.get('relation_id'),
-                   'action_id': msg.get('action_id'), 'accepted': accepted})
+                   'action_id': msg.get('action_id'), 'accepted': accepted, 'status': status})

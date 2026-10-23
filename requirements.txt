@@ -1,1 +1,3 @@
 PySide6>=6.9.2,<7
+Pillow>=10.4,<13
+cryptography>=43,<50

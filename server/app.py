@@ -21,6 +21,33 @@ class Session:
     paused: bool = False
     visible: bool = False
     ready: bool = False
+    protocol: int = 1
+    capabilities: dict | None = None
+
+
+def validate_capabilities(value):
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise DomainError('format', '角色能力格式不正确')
+    for key, limit in (('packageId', 96), ('packageVersion', 40), ('displayName', 64), ('revision', 64), ('digest', 64)):
+        if not isinstance(value.get(key), str) or not 1 <= len(value[key]) <= limit:
+            raise DomainError('format', '角色能力字段不正确')
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,95}', value['packageId']) or not re.fullmatch(r'[0-9a-f]{64}', value['digest']):
+        raise DomainError('format', '角色能力标识不正确')
+    interactions = value.get('interactions')
+    if not isinstance(interactions, list) or len(interactions) > 64:
+        raise DomainError('format', '互动清单超限')
+    seen, cleaned = set(), []
+    for item in interactions:
+        if (not isinstance(item, dict) or not isinstance(item.get('id'), str)
+                or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,95}', item['id'])
+                or item['id'] in seen or not isinstance(item.get('label'), str) or not 1 <= len(item['label']) <= 64
+                or type(item.get('order', 0)) not in (int, float) or not -1000 <= item.get('order', 0) <= 1000):
+            raise DomainError('format', '互动入口格式不正确')
+        seen.add(item['id'])
+        cleaned.append({'id': item['id'], 'label': item['label'], 'order': item.get('order', 0)})
+    return {**{key: value[key] for key in ('packageId', 'packageVersion', 'displayName', 'revision', 'digest')}, 'interactions': cleaned}
 
 
 class Relay:
@@ -48,6 +75,9 @@ class Relay:
 
     def state(self, device):
         relation = self.store.relation(device)
+        if relation:
+            partner = self.sessions.get(relation['partner_id'])
+            relation['capabilities'] = partner.capabilities if partner and self.available(relation['partner_id']) != 'offline' else None
         return {'relation': relation, 'partner_status': self.available(relation['partner_id']) if relation else 'offline',
                 'ended_id': self.store.device(device)['ended_id'], 'server_time': time.time()}
 
@@ -89,7 +119,23 @@ class Relay:
         if kind == 'profile':
             if type(msg.get('paused')) is not bool or type(msg.get('visible')) is not bool:
                 raise DomainError('format', '接收状态格式不正确')
-            self.store.character(device, msg.get('character'))
+            if session.protocol == 2:
+                capabilities = validate_capabilities(msg.get('capabilities'))
+                character = capabilities['packageId'] if capabilities else ''
+                previous = session.capabilities
+                if previous and capabilities and previous['revision'] == capabilities['revision'] and previous != capabilities:
+                    raise DomainError('format', '角色能力变化时需要新的修订标识')
+                if (previous or {}).get('revision') != (capabilities or {}).get('revision'):
+                    for key, pending in list(self.pending.items()):
+                        if pending['target'] == device:
+                            self.pending.pop(key, None)
+                            await self.reply(pending['sender'], pending['request_id'], error=DomainError('stale', '对方角色已切换，请刷新互动'))
+                session.capabilities = capabilities
+            else:
+                character = msg.get('character')
+                if character not in ('lulu', 'lumei'):
+                    raise DomainError('character', '旧版本不支持该角色，请升级')
+            self.store.character(device, character)
             session.paused, session.visible, session.ready = msg['paused'], msg['visible'], True
             await self.reply(device, request_id, self.state(device))
             await self.broadcast()
@@ -128,10 +174,13 @@ class Relay:
             raise DomainError('unlinked', '搭子连接已变化，请等待同步')
         if not self.sessions[device].ready:
             raise DomainError('connecting', '正在同步连接，请稍候')
+        protocol = self.sessions[device].protocol
         kind, action_id, count = msg.get('action'), msg.get('action_id'), msg.get('count', 1)
-        if kind not in ('pinch', 'bonk') or not isinstance(action_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', action_id):
+        if not isinstance(action_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', action_id):
             raise DomainError('format', '动作格式不正确')
-        if type(count) is not int or not 1 <= count <= 5:
+        if protocol == 1 and kind not in ('pinch', 'bonk'):
+            raise DomainError('format', '旧版本不支持该互动')
+        if protocol == 1 and (type(count) is not int or not 1 <= count <= 5):
             raise DomainError('format', '一次最多合并五个动作')
         key = (relation['id'], action_id)
         if key in self.seen:
@@ -141,8 +190,21 @@ class Relay:
         status = self.available(target)
         if status != 'available':
             raise DomainError(status, '对方暂不接收互动' if status == 'paused' else '对方暂不可达')
-        event = {'type': 'action', 'action': kind, 'action_id': action_id, 'relation_id': relation['id'],
-                 'count': count, 'expires_at': time.time() + 5}
+        target_session = self.sessions[target]
+        if target_session.protocol != protocol:
+            raise DomainError('upgrade', '请双方升级到同一互动协议版本')
+        if protocol == 2:
+            capabilities = target_session.capabilities
+            interaction = msg.get('interactionId')
+            if not capabilities or msg.get('capabilityRevision') != capabilities['revision']:
+                raise DomainError('stale', '对方角色已变化，请刷新互动')
+            if not isinstance(interaction, str) or not any(item['id'] == interaction for item in capabilities['interactions']):
+                raise DomainError('unsupported', '对方当前角色不支持该互动')
+            event = {'type': 'action', 'interactionId': interaction, 'capabilityRevision': capabilities['revision'],
+                     'action_id': action_id, 'relation_id': relation['id'], 'expires_at': time.time()+5}
+        else:
+            event = {'type': 'action', 'action': kind, 'action_id': action_id, 'relation_id': relation['id'],
+                     'count': count, 'expires_at': time.time() + 5}
         self.seen[key] = time.monotonic() + 30
         self.pending[key] = {'sender': device, 'target': target, 'request_id': msg['request_id'],
                              'expires': time.monotonic() + 5}
@@ -165,7 +227,8 @@ class Relay:
         if time.monotonic() > action['expires']:
             await self.reply(action['sender'], action['request_id'], error=DomainError('unknown', '未确认送达'))
         elif msg.get('accepted') is True and self.available(device) == 'available':
-            await self.reply(action['sender'], action['request_id'], {'accepted': True, 'action_id': action_id})
+            await self.reply(action['sender'], action['request_id'], {'accepted': True, 'action_id': action_id,
+                'status': 'queued' if msg.get('status') == 'queued' else 'started'})
         else:
             await self.reply(action['sender'], action['request_id'], error=DomainError('declined', '对方当前无法播放互动'))
 
@@ -206,9 +269,10 @@ def create_app(db_path=None):
 
     @app.get('/health')
     async def health():
-        return {'ok': True, 'protocol': 1}
+        return {'ok': True, 'protocol': 2, 'supported_protocols': [1, 2]}
 
     @app.post('/v1/devices')
+    @app.post('/v2/devices')
     async def register(request: Request):
         try:
             relay.limit(('register', request.client.host), 20, 3600)
@@ -216,8 +280,7 @@ def create_app(db_path=None):
             raise HTTPException(429, error.message)
         return store.register()
 
-    @app.websocket('/v1/connect')
-    async def connect(socket: WebSocket):
+    async def connect(socket: WebSocket, protocol=1):
         authorization = socket.headers.get('authorization', '')
         token = authorization[7:] if authorization.startswith('Bearer ') else ''
         device = store.authenticate(token) if token else None
@@ -227,7 +290,7 @@ def create_app(db_path=None):
             return
         await socket.accept()
         previous = relay.sessions.get(device)
-        session = Session(socket, time.monotonic())
+        session = Session(socket, time.monotonic(), protocol=protocol)
         relay.sessions[device] = session
         if previous:
             with suppress(Exception):
@@ -238,7 +301,7 @@ def create_app(db_path=None):
                 raw = await socket.receive_text()
                 if relay.sessions.get(device) is not session:
                     break
-                if len(raw) > 8192:
+                if len(raw.encode('utf-8')) > (32768 if protocol == 2 else 8192):
                     await socket.close(code=1009)
                     break
                 request_id = ''
@@ -250,7 +313,7 @@ def create_app(db_path=None):
                     if msg.get('type') not in ('heartbeat', 'ack') and not request_id:
                         raise DomainError('format', '缺少请求标识')
                     await relay.command(device, msg)
-                except (ValueError, TypeError, DomainError) as error:
+                except (ValueError, TypeError, RecursionError, DomainError) as error:
                     error = error if isinstance(error, DomainError) else DomainError('format', '请求格式不正确')
                     await relay.reply(device, request_id, error=error)
         except (WebSocketDisconnect, RuntimeError):
@@ -259,5 +322,13 @@ def create_app(db_path=None):
             if relay.sessions.get(device) is session:
                 relay.sessions.pop(device, None)
                 await relay.broadcast()
+
+    @app.websocket('/v1/connect')
+    async def connect_v1(socket: WebSocket):
+        await connect(socket, 1)
+
+    @app.websocket('/v2/connect')
+    async def connect_v2(socket: WebSocket):
+        await connect(socket, 2)
 
     return app

@@ -1,0 +1,302 @@
+{
+  "noah-lulu": {
+    "version": "1.5.0",
+    "schedule": {
+      "schedule.soon": {
+        "action": "look_around",
+        "text": "还有十分钟，陪你等到收工。"
+      },
+      "schedule.offwork": {
+        "action": "jump",
+        "text": "下班啦！今天辛苦了！"
+      }
+    },
+    "ball": {
+      "states": [
+        "calm_company"
+      ],
+      "leftAction": "amble_left",
+      "rightAction": "amble_right",
+      "touchAction": "wave"
+    },
+    "focus": {
+      "action": "jump",
+      "text": "这一段完成啦，起来伸个懒腰吧。"
+    },
+    "gifts": [
+      {
+        "id": "gift_coffee",
+        "action": "jump",
+        "label": "送杯咖啡",
+        "text": "搭子送来一杯咖啡，辛苦啦。",
+        "display": {
+          "symbol": "☕",
+          "label": "暖暖咖啡",
+          "durationMs": 15000
+        }
+      },
+      {
+        "id": "gift_flower",
+        "action": "jump",
+        "label": "送朵小花",
+        "text": "收到搭子的小花，今天也要开心。",
+        "display": {
+          "symbol": "✿",
+          "label": "给你小花",
+          "durationMs": 15000
+        }
+      },
+      {
+        "id": "gift_star",
+        "action": "jump",
+        "label": "送颗星星",
+        "text": "把这颗小星星送给你。",
+        "display": {
+          "symbol": "★",
+          "label": "幸运星",
+          "durationMs": 15000
+        }
+      }
+    ],
+    "exploration": {
+      "observeAction": "look_around",
+      "leftAction": "amble_left",
+      "rightAction": "amble_right",
+      "jumpAction": "jump",
+      "restAction": "waiting",
+      "jumpDurationMs": 900
+    }
+  },
+  "codex-lumei": {
+    "version": "1.5.0",
+    "schedule": {
+      "schedule.soon": {
+        "action": "look_around",
+        "text": "快到点啦，准备收拾今天的心情。"
+      },
+      "schedule.offwork": {
+        "action": "jump",
+        "text": "收工！把时间留给喜欢的事吧。"
+      }
+    },
+    "ball": {
+      "states": [
+        "calm_company"
+      ],
+      "leftAction": "amble_left",
+      "rightAction": "amble_right",
+      "touchAction": "wave"
+    },
+    "focus": {
+      "action": "jump",
+      "text": "这一段完成啦，起来伸个懒腰吧。"
+    },
+    "gifts": [
+      {
+        "id": "gift_coffee",
+        "action": "jump",
+        "label": "送杯咖啡",
+        "text": "搭子送来一杯咖啡，辛苦啦。",
+        "display": {
+          "symbol": "☕",
+          "label": "暖暖咖啡",
+          "durationMs": 15000
+        }
+      },
+      {
+        "id": "gift_flower",
+        "action": "jump",
+        "label": "送朵小花",
+        "text": "收到搭子的小花，今天也要开心。",
+        "display": {
+          "symbol": "✿",
+          "label": "给你小花",
+          "durationMs": 15000
+        }
+      },
+      {
+        "id": "gift_star",
+        "action": "jump",
+        "label": "送颗星星",
+        "text": "把这颗小星星送给你。",
+        "display": {
+          "symbol": "★",
+          "label": "幸运星",
+          "durationMs": 15000
+        }
+      }
+    ],
+    "exploration": {
+      "observeAction": "look_around",
+      "leftAction": "amble_left",
+      "rightAction": "amble_right",
+      "jumpAction": "jump",
+      "restAction": "waiting",
+      "jumpDurationMs": 900
+    }
+  },
+  "monthly-salary-cat": {
+    "version": "1.3.0",
+    "schedule": {
+      "schedule.soon": {
+        "action": "phone_break",
+        "text": "还有十分钟，已经开始期待下班了。"
+      },
+      "schedule.offwork": {
+        "action": "chair_rest",
+        "text": "今日工作结束，拍拍辛苦的自己。"
+      }
+    },
+    "ball": {
+      "states": [
+        "company"
+      ],
+      "leftAction": "walk_left",
+      "rightAction": "walk_right",
+      "touchAction": "chair_rest"
+    },
+    "focus": {
+      "action": "chair_rest",
+      "text": "这一段完成啦，起来伸个懒腰吧。"
+    },
+    "gifts": [
+      {
+        "id": "gift_coffee",
+        "action": "chair_rest",
+        "label": "送杯咖啡",
+        "text": "搭子送来一杯咖啡，辛苦啦。",
+        "display": {
+          "symbol": "☕",
+          "label": "暖暖咖啡",
+          "durationMs": 15000
+        }
+      },
+      {
+        "id": "gift_flower",
+        "action": "chair_rest",
+        "label": "送朵小花",
+        "text": "收到搭子的小花，今天也要开心。",
+        "display": {
+          "symbol": "✿",
+          "label": "给你小花",
+          "durationMs": 15000
+        }
+      },
+      {
+        "id": "gift_star",
+        "action": "chair_rest",
+        "label": "送颗星星",
+        "text": "把这颗小星星送给你。",
+        "display": {
+          "symbol": "★",
+          "label": "幸运星",
+          "durationMs": 15000
+        }
+      }
+    ]
+  },
+  "lulu": {
+    "version": "1.4.0",
+    "schedule": {
+      "schedule.soon": {
+        "action": "lean_into_touch",
+        "text": "再陪你一小会儿，就能下班啦。"
+      },
+      "schedule.offwork": {
+        "action": "lean_into_touch",
+        "text": "今天辛苦了，下班快乐！"
+      }
+    },
+    "focus": {
+      "action": "lean_into_touch",
+      "text": "这一段完成啦，起来伸个懒腰吧。"
+    },
+    "gifts": [
+      {
+        "id": "gift_coffee",
+        "action": "lean_into_touch",
+        "label": "送杯咖啡",
+        "text": "搭子送来一杯咖啡，辛苦啦。",
+        "display": {
+          "symbol": "☕",
+          "label": "暖暖咖啡",
+          "durationMs": 15000
+        }
+      },
+      {
+        "id": "gift_flower",
+        "action": "lean_into_touch",
+        "label": "送朵小花",
+        "text": "收到搭子的小花，今天也要开心。",
+        "display": {
+          "symbol": "✿",
+          "label": "给你小花",
+          "durationMs": 15000
+        }
+      },
+      {
+        "id": "gift_star",
+        "action": "lean_into_touch",
+        "label": "送颗星星",
+        "text": "把这颗小星星送给你。",
+        "display": {
+          "symbol": "★",
+          "label": "幸运星",
+          "durationMs": 15000
+        }
+      }
+    ]
+  },
+  "lumei": {
+    "version": "1.4.0",
+    "schedule": {
+      "schedule.soon": {
+        "action": "happy_wave",
+        "text": "还有十分钟，快到下班时间啦。"
+      },
+      "schedule.offwork": {
+        "action": "happy_wave",
+        "text": "挥挥手，和今天的工作说再见。"
+      }
+    },
+    "focus": {
+      "action": "happy_wave",
+      "text": "这一段完成啦，起来伸个懒腰吧。"
+    },
+    "gifts": [
+      {
+        "id": "gift_coffee",
+        "action": "happy_wave",
+        "label": "送杯咖啡",
+        "text": "搭子送来一杯咖啡，辛苦啦。",
+        "display": {
+          "symbol": "☕",
+          "label": "暖暖咖啡",
+          "durationMs": 15000
+        }
+      },
+      {
+        "id": "gift_flower",
+        "action": "happy_wave",
+        "label": "送朵小花",
+        "text": "收到搭子的小花，今天也要开心。",
+        "display": {
+          "symbol": "✿",
+          "label": "给你小花",
+          "durationMs": 15000
+        }
+      },
+      {
+        "id": "gift_star",
+        "action": "happy_wave",
+        "label": "送颗星星",
+        "text": "把这颗小星星送给你。",
+        "display": {
+          "symbol": "★",
+          "label": "幸运星",
+          "durationMs": 15000
+        }
+      }
+    ]
+  }
+}

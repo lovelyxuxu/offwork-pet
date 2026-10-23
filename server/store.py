@@ -5,6 +5,7 @@ import secrets
 import sqlite3
 import time
 import uuid
+import re
 
 
 class DomainError(Exception):
@@ -68,7 +69,7 @@ class Store:
         return {'id': row['id'], 'partner_id': partner, 'character': self.device(partner)['character']}
 
     def character(self, device, character):
-        if character not in ('lulu', 'lumei'):
+        if not isinstance(character, str) or character and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,95}', character):
             raise DomainError('character', '不支持的形象')
         self.db.execute('UPDATE devices SET character=? WHERE id=?', (character, device))
 
