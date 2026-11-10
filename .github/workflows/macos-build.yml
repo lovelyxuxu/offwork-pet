@@ -7,6 +7,9 @@ on:
       - "rally-lite/**"
       - ".github/workflows/macos-build.yml"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     # macos-15 = Apple Silicon (arm64) + Xcode 16；交叉编出 x86_64 切片即可得到通用二进制
@@ -33,6 +36,17 @@ jobs:
           name: RallyLite-macOS-universal-preview
           path: dist/RallyLite-macOS-universal-preview.zip
           if-no-files-found: error
+
+      # Artifacts 下载需要登录 GitHub；Release 资产是公开直链，方便直接取用
+      - name: Publish preview release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view macos-preview >/dev/null 2>&1 || \
+            gh release create macos-preview \
+              --title "RallyLite macOS 预览（通用二进制）" \
+              --notes "每次构建覆盖更新。未签名未公证，首次打开需在“系统设置 → 隐私与安全性”点“仍要打开”放行一次。"
+          gh release upload macos-preview dist/RallyLite-macOS-universal-preview.zip --clobber
 
       - name: Write summary
         if: always()
