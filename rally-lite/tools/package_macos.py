@@ -111,6 +111,14 @@ def package(app, force):
     run("codesign", "--verify", "--strict", "--verbose=2", bundle)
     run("lipo", "-info", bundle / "Contents/MacOS/RallyLite")
 
+    # 只打印不够：单架构的包也能构建成功，必须断言两个切片都在
+    archs = subprocess.run(["lipo", "-archs", bundle / "Contents/MacOS/RallyLite"],
+                           check=True, capture_output=True, text=True).stdout.split()
+    missing = {"arm64", "x86_64"} - set(archs)
+    if missing:
+        sys.exit(f"Not a universal binary, missing slice(s): {sorted(missing)}; got {archs}")
+    print(f"Universal binary verified: {archs}")
+
     archive = DIST / f"{NAME}.zip"
     if archive.exists():
         archive.unlink()
