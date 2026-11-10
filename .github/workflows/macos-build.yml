@@ -1,0 +1,53 @@
+name: macOS package
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "rally-lite/**"
+      - ".github/workflows/macos-build.yml"
+
+jobs:
+  build:
+    # macos-14 = Apple Silicon (arm64) + Xcode 15; 交叉编出 x86_64 切片即可得到通用二进制
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcode-select -p
+          cmake --version || brew install cmake
+          python3 --version
+
+      - name: Build, ad-hoc sign and package
+        run: python3 rally-lite/tools/package_macos.py
+
+      - name: Upload preview zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: RallyLite-macOS-universal-preview
+          path: dist/RallyLite-macOS-universal-preview.zip
+          if-no-files-found: error
+
+      - name: Write summary
+        if: always()
+        run: |
+          {
+            echo "## RallyLite macOS 预览包"
+            if [ -f dist/RallyLite-macOS-universal-preview.zip ]; then
+              echo ""
+              echo '```'
+              echo "bytes: $(wc -c < dist/RallyLite-macOS-universal-preview.zip | tr -d ' ')"
+              echo "sha256: $(shasum -a 256 dist/RallyLite-macOS-universal-preview.zip | cut -d' ' -f1)"
+              lipo -info dist/RallyLite-macOS-universal-preview/RallyLite.app/Contents/MacOS/RallyLite || true
+              codesign -dv dist/RallyLite-macOS-universal-preview/RallyLite.app 2>&1 | head -5 || true
+              echo '```'
+            else
+              echo ""
+              echo "打包失败，见上方构建日志。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
