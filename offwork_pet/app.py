@@ -1,11 +1,12 @@
 """Native desktop host for independently installed declarative character packages."""
 from dataclasses import replace
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 from pathlib import Path
 import sys
 import shutil
+import subprocess
 from time import monotonic
 from tempfile import TemporaryDirectory
 
@@ -17,12 +18,19 @@ from PySide6.QtWidgets import (
     QSlider, QSpinBox, QStyle, QSystemTrayIcon, QTimeEdit, QVBoxLayout, QWidget, QTabWidget, QPushButton,
 )
 
-from .core import Config, ReminderTracker, bubble_visible, countdown, data_dir, load_config, save_config
+from .core import ReminderTracker, bubble_visible, countdown, data_dir, load_config, save_config
+from .alert import AlertController
+from .alert_ui import RallyDialog
+from .chat import ChatController
+from . import chat_history
+from .shortcut_ui import edit_shortcuts
 from .buddy import BuddyClient
+from .visits import VisitController
 from .buddy_ui import BuddyDialog
 from .packages import PackageLibrary, PackageError
 from .behavior import BehaviorRuntime
 from .package_player import PackagePlayer, package_icon
+from .package_loading import CharacterLoader
 from .package_ui import PackageDialog
 from .action_panel import ActionPanel
 from .ui_theme import STYLE, card, label as ui_label, scroll, style_window
@@ -35,6 +43,8 @@ from .toy_ui import BallWindow
 from .companionship import CompanionMemory
 from .focus import FocusSession
 from .focus_ui import FocusDialog
+from .dialogue import DialogueLibrary, DialogueRuntime
+from .dialogue_bubble import draw_dialogue
 from . import __version__
 
 PALETTES = {"奶油橘": ("#F5C997", "#FFF0D9"), "薄荷绿": ("#A9D5BB", "#E8F6EC"), "云朵蓝": ("#B3CDEC", "#ECF3FF")}
@@ -107,6 +117,20 @@ class SettingsDialog(QDialog):
         self.clock = QTimeEdit(QTime.fromString(config.off_time, "HH:mm"))
         self.clock.setDisplayFormat("HH:mm")
         form.addRow("平时几点下班", self.clock)
+        self.start_enabled = QCheckBox('设置上班时间，用于开工问候（可选）')
+        self.start_enabled.setChecked(bool(config.start_time))
+        self.start_clock = QTimeEdit(QTime.fromString(config.start_time or '09:00', 'HH:mm'))
+        self.start_clock.setDisplayFormat('HH:mm')
+        self.start_clock.setEnabled(bool(config.start_time))
+        self.start_enabled.toggled.connect(self.start_clock.setEnabled)
+        form.addRow(self.start_enabled)
+        form.addRow('平时几点上班', self.start_clock)
+        self.meal_clocks = {}
+        for key, name, default in (('breakfast', '早饭时间', '08:00'), ('lunch', '午饭时间', '12:00'), ('dinner', '晚饭时间', '18:30')):
+            control = QTimeEdit(QTime.fromString(config.meal_times.get(key, default), 'HH:mm'))
+            control.setDisplayFormat('HH:mm')
+            self.meal_clocks[key] = control
+            form.addRow(name, control)
         days = QHBoxLayout()
         self.days = []
         for i, label in enumerate("一二三四五六日"):
@@ -206,7 +230,10 @@ class SettingsDialog(QDialog):
             self.autonomous.toggled.connect(control.setEnabled)
         form.addRow(ui_label('动作由角色包提供；操作、打开面板或全屏使用其他应用时暂歇。', 'muted'))
         self.checks = {}
-        for key, label in (("exploration_enabled", "自由活动时主动寻找窗口落脚点（需角色支持）"),
+        for key, label in (("dialogue_enabled", "展示角色台词（在角色管理中选择或导入）"),
+                          ("dialogue_proactive", "允许角色偶尔主动冒泡（始终隐藏气泡时不展示）"),
+                          ("dialogue_care_enabled", "允许角色提醒喝水、护眼与活动休息"),
+                          ("exploration_enabled", "自由活动时主动寻找窗口落脚点（需角色支持）"),
                           ("internal_surfaces", "识别前台窗口内的工具栏和面板边界"),
                           ("personality_enabled", "记住互动偏好，让自主动作逐渐贴近你的习惯"),
                           ("topmost", "始终置顶"), ("interactive", "启用角色包的本地互动"), ("pointer_look_enabled", "空闲时看向鼠标（需角色包支持）"), ("reminders", "提前 30 分钟、10 分钟及到点提醒"), ("rituals_enabled", "下班前 10 分钟及到点时，让角色陪你迎接下班"), ("sound", "播放本地提示和角色声音"), ("click_through", "鼠标穿透（通过托盘菜单恢复）")):
@@ -246,6 +273,8 @@ class SettingsDialog(QDialog):
 
     def result_config(self, old):
         return replace(old, off_time=self.clock.time().toString("HH:mm"),
+                       start_time=self.start_clock.time().toString('HH:mm') if self.start_enabled.isChecked() else '',
+                       meal_times={key: control.time().toString('HH:mm') for key, control in self.meal_clocks.items()},
                        weekdays=[i for i, day in enumerate(self.days) if day.isChecked()],
                        override_date=datetime.now().date().isoformat() if self.today.isChecked() else "",
                        override_time=self.today_clock.time().toString("HH:mm"), color=self.color.currentText(),
@@ -257,7 +286,7 @@ class SettingsDialog(QDialog):
 
 
 class Pet(QWidget):
-    def __init__(self, config, persist=True, *, relay_endpoint=None, package_directory=None, seed_starters=True):
+    def __init__(self, config, persist=True, *, relay_endpoint=None, package_directory=None, seed_starters=True, enable_alert_hotkeys=True):
         super().__init__()
         self.config = config
         self.persist = persist
@@ -269,8 +298,15 @@ class Pet(QWidget):
         self._temporary_library = TemporaryDirectory() if not persist and package_directory is None else None
         library_root = package_directory or (Path(self._temporary_library.name) if self._temporary_library else data_dir() / 'characters')
         self.library = PackageLibrary(library_root)
+        self.character_loader = CharacterLoader(self)
+        QApplication.instance().aboutToQuit.connect(self.character_loader.shutdown)
         if seed_starters:
             self.library.seed(Path(__file__).resolve().parent / 'assets' / 'starter-packs')
+        self.dialogue_library = DialogueLibrary(self.library.root / 'dialogues')
+        if seed_starters:
+            self.dialogue_library.seed(Path(__file__).resolve().parent / 'assets' / 'dialogue-packs')
+        self.dialogue = DialogueRuntime(self.dialogue_library, self.library.root / 'dialogue-state.json' if persist else None)
+        self._dialogue_focus_active = False
         self.runtime = self.player = None
         self.autonomy = None
         self.ball_window = self.ball_game = None
@@ -306,6 +342,7 @@ class Pet(QWidget):
         self.double_click = False
         self.dialog = None
         self.buddy_dialog = None
+        self.rally_dialog = None
         self.remote_message = ''
         self.remote_plays = deque(maxlen=3)
         self.current_relation_id = ''
@@ -323,32 +360,48 @@ class Pet(QWidget):
         self.menu.setStyleSheet(STYLE)
         self.menu.addAction('动作与互动…', self.open_actions)
         self.menu.addAction("显示宠物 / 恢复位置", self.restore)
-        self.menu.addAction("设置…", self.open_settings)
-        self.menu.addAction('检查更新…', self.open_updates)
-        self.menu.addAction('角色管理…', self.open_packages)
-        self.menu.addAction('制作角色…', self.open_creator)
-        self.menu.addAction('专注陪伴…', self.open_focus)
-        self.explore_action = self.menu.addAction('去附近探索', self.explore_now)
-        self.ball_action = self.menu.addAction('玩小球', self.toggle_ball)
-        self.ritual_action = self.menu.addAction('预览下班庆祝', self.preview_ritual)
-        self.autonomous_action = self.menu.addAction('自主活动')
+        self.menu.addAction('发送即时消息…', lambda: self.chat.open())
+        self.menu.addAction('聊天记录…', self.open_chat_history)
+        self.notification_action = self.menu.addAction('关闭消息与集会通知', self.notification_menu_clicked)
+        self.menu.addSeparator()
+        self.social_menu = self.menu.addMenu('社交与通知')
+        self.social_menu.addAction('搭子连接…', self.open_buddy)
+        self.social_menu.addAction('集会与警报…', self.open_rally)
+        self.social_menu.addSeparator()
+        self.pause_action = self.social_menu.addAction('暂停接收远程互动')
+        self.pause_action.setCheckable(True)
+        self.pause_action.setChecked(config.paused)
+        self.pause_action.triggered.connect(self.set_paused)
+        self.appearance_menu = self.menu.addMenu('外观与设置')
+        self.appearance_menu.addAction('桌面布局 / 预览模式…', lambda: self.chat.open_layout())
+        self.appearance_menu.addAction('基本设置…', self.open_settings)
+        self.appearance_menu.addAction('统一快捷键设置…', lambda: edit_shortcuts(self))
+        self.appearance_menu.addSeparator()
+        self.appearance_menu.addAction('角色管理…', self.open_packages)
+        self.appearance_menu.addAction('制作角色…', self.open_creator)
+        self.appearance_menu.addSeparator()
+        self.pass_action = self.appearance_menu.addAction("鼠标穿透")
+        self.pass_action.setCheckable(True)
+        self.pass_action.triggered.connect(self.toggle_passthrough)
+        self.hide_action = self.appearance_menu.addAction("隐藏宠物")
+        self.hide_action.setCheckable(True)
+        self.hide_action.toggled.connect(self.set_pet_hidden)
+        self.life_menu = self.menu.addMenu('桌面生活')
+        self.life_menu.addAction('专注陪伴…', self.open_focus)
+        self.explore_action = self.life_menu.addAction('去附近探索', self.explore_now)
+        self.ball_action = self.life_menu.addAction('玩小球', self.toggle_ball)
+        self.ritual_action = self.life_menu.addAction('预览下班庆祝', self.preview_ritual)
+        self.life_menu.addSeparator()
+        self.autonomous_action = self.life_menu.addAction('自主活动')
         self.autonomous_action.setCheckable(True)
         self.autonomous_action.triggered.connect(self.set_autonomous)
-        self.stay_action = self.menu.addAction('在这里待着')
+        self.stay_action = self.life_menu.addAction('在这里待着')
         self.stay_action.setCheckable(True)
         self.stay_action.triggered.connect(self.set_stay)
         # Kept as a compatibility object; actions are presented in the persistent shelf.
         self.character_menu = QMenu('角色动作', self)
-        self.menu.addAction('搭子…', self.open_buddy)
-        self.pause_action = self.menu.addAction('暂停接收远程互动')
-        self.pause_action.setCheckable(True)
-        self.pause_action.setChecked(config.paused)
-        self.pause_action.triggered.connect(self.set_paused)
-        self.pass_action = self.menu.addAction("鼠标穿透")
-        self.pass_action.setCheckable(True)
-        self.pass_action.triggered.connect(self.toggle_passthrough)
-        self.menu.addAction("隐藏宠物", self.hide)
         self.menu.addSeparator()
+        self.menu.addAction('检查更新…', self.open_updates)
         self.menu.addAction("退出下班搭子", self.quit)
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self.tray_activated)
@@ -374,9 +427,30 @@ class Pet(QWidget):
         self.buddy.capabilities_provider = self.character_capabilities
         self.buddy.changed.connect(self.buddy_changed)
         self.buddy.incoming.connect(self.receive_remote)
+        self.visits = VisitController(self)
         self.updates = UpdateController(self)
+        self.alerts = AlertController(self.config, self.buddy, self, enable_hotkeys=enable_alert_hotkeys)
+        self.chat = ChatController(self)
+        self.alerts.chat_requested.connect(self.chat.open)
+        self.alerts.mute_requested.connect(self.mute_notifications)
+        self.update_notification_tray()
         if self.config.network_enabled and persist:
             QTimer.singleShot(0, self.buddy.start)
+
+    def open_chat_history(self):
+        path = chat_history.history_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
+        subprocess.Popen(['notepad.exe', str(path)])
+
+    def open_rally(self):
+        self.interrupt_autonomy()
+        if self.rally_dialog is None:
+            self.rally_dialog = RallyDialog(self)
+        self.rally_dialog.refresh()
+        self.rally_dialog.show()
+        self.rally_dialog.raise_()
+        self.rally_dialog.activateWindow()
 
     def open_buddy(self):
         self.interrupt_autonomy()
@@ -410,7 +484,7 @@ class Pet(QWidget):
         previous = dict(self.library.index['packages'])
         package = self.library.install(archive)
         try:
-            self.select_package(package.id)
+            self.select_package(package.id, _prepared=(package, None))
         except Exception:
             self.library.index['packages'] = previous
             self.library._save()
@@ -420,14 +494,19 @@ class Pet(QWidget):
             raise
         return package
 
-    def select_package(self, identifier):
+    def select_package(self, identifier, *, _prepared=None):
+        self.character_loader.cancel()
         new_runtime = new_player = None
         if identifier:
-            package = self.library.load(identifier)
+            package = _prepared[0] if _prepared else self.library.load(identifier)
             new_runtime = BehaviorRuntime(package)
             new_player = PackagePlayer(new_runtime)
+            if _prepared and _prepared[1] is not None:
+                new_player.cache = _prepared[1]
             # Prepare the first image before releasing the previous usable character.
             new_player.cache.image(package, new_runtime.frame()['file'])
+        if hasattr(self, 'visits'):
+            self.visits.stop()
         if hasattr(self, 'hold_timer'):
             self.hold_timer.stop()
         self.stroke_active = False
@@ -448,6 +527,7 @@ class Pet(QWidget):
         self.autonomy = AutonomyController(new_runtime) if new_runtime else None
         self.autonomous_position = None
         self.config.character = identifier or ''
+        self.refresh_dialogue()
         self.reaction_until = 0
         self.remote_message = ''
         self.last_character_error = ''
@@ -460,7 +540,7 @@ class Pet(QWidget):
         self.refresh_play_controls()
         icon = QIcon(package_icon(self.runtime.package)) if self.runtime else self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
         self.setWindowIcon(icon)
-        self.tray.setIcon(icon)
+        self.update_notification_tray(icon)
         if hasattr(self, 'buddy'):
             self.buddy.received.clear()
             self.buddy.update_config(self.config)
@@ -488,7 +568,63 @@ class Pet(QWidget):
         if name != 'pointer.leave':
             self.interrupt_autonomy()
         position = self.player.point(point) if point is not None else None
-        return self.runtime_call(lambda: self.runtime.event(name, position, {'source': source}))
+        result = self.runtime_call(lambda: self.runtime.event(name, position, {'source': source}))
+        if source == 'local' and name in ('pointer.click', 'gesture.stroke', 'drag.end'):
+            self.dialogue_event(name, facts={'dragMoved': True})
+        return result
+
+    def refresh_dialogue(self):
+        if self.config.character and self.config.character not in self.config.dialogue_packs:
+            default = self.dialogue_library.selected(self.config.character, {})
+            if default:
+                self.config.dialogue_packs[self.config.character] = default['id']
+        self.dialogue.switch(self.config.character, self.config.dialogue_packs)
+        if not self.config.dialogue_enabled:
+            self.dialogue.clear()
+        self.update()
+
+    def dialogue_available(self, allow_panel=False, check_bubble=True):
+        if (not self.config.dialogue_enabled or self.config.paused or not self.isVisible()
+                or self.config.bubble_mode == 'hidden' or not self.runtime or self.runtime.stopped
+                or self.dialog or QApplication.activeModalWidget() is not None):
+            return False
+        if not allow_panel and (self.menu.isVisible() or any(panel is not None and panel.isVisible()
+                for panel in (self.action_panel, self.package_dialog, self.buddy_dialog, self.rally_dialog, self.focus_dialog, self.creator_dialog))):
+            return False
+        if self.runtime.current and self.runtime.context.get('source') == 'remote':
+            return False
+        screen = QApplication.screenAt(self.frameGeometry().center()) or QApplication.primaryScreen()
+        if self.desktop_observer.snapshot(screen).fullscreen:
+            return False
+        return bool(not check_bubble or self.config.dialogue_proactive or bubble_visible(self.config.bubble_mode,
+                    self.hovered, self.clicked_until, monotonic()))
+
+    def dialogue_event(self, event, facts=None, allow_panel=False):
+        return self.dialogue.emit(event, datetime.now(), monotonic(), self.config,
+                available=self.dialogue_available(allow_panel), facts=facts, focus=self.focus.active)
+
+    def preview_dialogue(self, content, character_id):
+        if character_id != self.config.character:
+            return '先使用这个角色，再让它说话。'
+        if not self.config.dialogue_enabled or self.config.bubble_mode == 'hidden' or self.config.paused:
+            return '请先开启角色台词、恢复桌宠，并让气泡可以显示。'
+        if self.focus.active:
+            return '专注结束后再试播吧。'
+        if not self.isVisible():
+            return '请先显示桌宠。'
+        # Preview is explicit, local and short-lived: it does not change the
+        # selected pack, consume daily limits or write automatic history.
+        for panel in (self.action_panel, self.package_dialog):
+            if panel is not None:
+                panel.hide()
+        self.menu.hide()
+        self.dialogue.clear()
+        self.dialogue.text = content
+        self.dialogue.active_event = 'preview'
+        self.dialogue.priority = 80
+        self.dialogue.until = monotonic() + 12
+        self.update()
+        return ''
 
     def invoke_package_menu(self, identifier):
         if self.runtime and self.config.interactive:
@@ -509,10 +645,17 @@ class Pet(QWidget):
             self.current_relation_id = relation_id
 
     def set_paused(self, paused):
+        if paused:
+            self.dialogue.clear()
         self.config.paused = paused
         self.pause_action.setChecked(paused)
         if paused:
             self.clear_remote()
+            if hasattr(self, 'chat'):
+                self.chat.overlay.clear()
+                self.chat.failure_notice.clear()
+            if hasattr(self, 'alerts'):
+                self.alerts.overlay.stop()
         self.buddy.update_config(self.config)
         self.write_config()
         self.buddy.changed.emit()
@@ -580,6 +723,11 @@ class Pet(QWidget):
                     self.character_sound.play(self.runtime.package.asset(action['sound']))
 
     def hideEvent(self, event):
+        self.sync_hide_action(True)
+        if hasattr(self, 'dialogue'):
+            self.dialogue.clear()
+        if hasattr(self, 'visits'):
+            self.visits.stop()
         self.interrupt_autonomy()
         self.gift = None
         self.desktop_observer.close()
@@ -615,6 +763,7 @@ class Pet(QWidget):
         super().focusOutEvent(event)
 
     def showEvent(self, event):
+        self.sync_hide_action(False)
         if self.runtime:
             self.runtime.suspend(not self.config.interactive)
         if hasattr(self, 'buddy'):
@@ -625,13 +774,19 @@ class Pet(QWidget):
 
     def write_config(self):
         if self.persist:
+            saved = False
             try:
                 save_config(self.config)
+                saved = True
                 self.companion_memory.save()
             except OSError as error:
                 QMessageBox.warning(self, "保存失败", str(error))
+                return saved
+        return True
 
     def apply_config(self):
+        was_hidden = self.isHidden()
+        self.refresh_dialogue()
         self.desktop_observer.internal_enabled = self.config.internal_surfaces
         current_id = self.runtime.package.id if self.runtime else ''
         if current_id != self.config.character:
@@ -650,9 +805,16 @@ class Pet(QWidget):
         self.setWindowOpacity(self.config.opacity / 100)
         icon = QIcon(package_icon(self.runtime.package)) if self.runtime else self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
         self.setWindowIcon(icon)
-        self.tray.setIcon(icon)
+        self.update_notification_tray(icon)
         if hasattr(self, 'buddy'):
             self.buddy.update_config(self.config)
+        if hasattr(self, 'alerts'):
+            self.alerts.update_config(self.config)
+        if hasattr(self, 'chat') and (self.config.notifications_muted or self.config.paused):
+            self.chat.overlay.clear()
+            self.chat.failure_notice.clear()
+        if hasattr(self, 'chat'):
+            self.chat.apply_layout()
         if hasattr(self, 'updates'):
             self.updates.configure_automatic()
         self.hovered = False
@@ -666,14 +828,30 @@ class Pet(QWidget):
             self.runtime.preferences = (self.companion_memory.entry(self.runtime.package.id)['favorites'] if self.config.personality_enabled else {})
         self.snapshot = countdown(datetime.now(), self.config)
         self.tick()
-        self.show()
+        if not was_hidden:
+            self.show()
         if self.action_panel:
             self.action_panel.refresh()
 
+    def sync_hide_action(self, hidden):
+        if hasattr(self, 'hide_action'):
+            blocked = self.hide_action.blockSignals(True)
+            self.hide_action.setChecked(hidden)
+            self.hide_action.blockSignals(blocked)
+
+    def set_pet_hidden(self, hidden):
+        if hidden:
+            self.hide()
+        else:
+            self.restore()
+
     def show_bubble(self, now=None):
+        moment = monotonic() if now is None else now
+        talking = (self.config.dialogue_enabled and (self.config.dialogue_proactive or self.dialogue.active_event == 'preview') and not self.config.paused
+                   and self.config.bubble_mode != 'hidden' and bool(self.dialogue.text) and moment < self.dialogue.until)
         ritual = (self.runtime and self.runtime.current and self.runtime.context.get('source') == 'ritual'
                   and self.config.interactive and self.config.bubble_mode != 'hidden')
-        return bool(ritual or bubble_visible(self.config.bubble_mode, self.hovered, self.clicked_until,
+        return bool(talking or ritual or bubble_visible(self.config.bubble_mode, self.hovered, self.clicked_until,
                               monotonic() if now is None else now))
 
     def cat_contains(self, point):
@@ -707,6 +885,8 @@ class Pet(QWidget):
         self.move(max(rect.left(), min(x, rect.right() - self.width() + 1)),
                   max(rect.top(), min(y, rect.bottom() - self.height() + 1)))
         self.show()
+        self.raise_()
+        self.update()
 
     def toggle_passthrough(self, checked):
         self.config.click_through = checked
@@ -716,6 +896,44 @@ class Pet(QWidget):
     def tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self.open_settings()
+
+    def update_notification_tray(self, icon=None):
+        icon = icon or self.windowIcon()
+        muted = self.config.notifications_muted
+        if muted:
+            pixmap = icon.pixmap(32, 32)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(QPen(QColor('white'), 1.5))
+            painter.setBrush(QColor('#D84B55'))
+            painter.drawEllipse(QRectF(15, 15, 16, 16))
+            painter.setPen(QPen(QColor('white'), 2.5))
+            painter.drawLine(QPointF(19, 23), QPointF(27, 23))
+            painter.end()
+            icon = QIcon(pixmap)
+        self.tray.setIcon(icon)
+        self.tray.setToolTip('下班搭子 · 免打扰：聊天消息和集会警告已关闭' if muted else f'下班搭子 · {self.snapshot.display}')
+        if hasattr(self, 'notification_action'):
+            self.notification_action.setText('开启消息与集会通知（当前免打扰）' if muted else '关闭消息与集会通知')
+
+    def notification_menu_clicked(self):
+        self.set_notifications_muted(not self.config.notifications_muted)
+
+    def mute_notifications(self):
+        self.set_notifications_muted(True)
+
+    def set_notifications_muted(self, muted):
+        if self.config.notifications_muted == muted:
+            return
+        self.config.notifications_muted = muted
+        if muted:
+            self.alerts.overlay.stop()
+            self.chat.overlay.clear()
+            self.chat.failure_notice.clear()
+        self.update_notification_tray()
+        self.write_config()
+        if self.rally_dialog:
+            self.rally_dialog.refresh()
 
     def open_settings(self):
         self.interrupt_autonomy()
@@ -749,6 +967,7 @@ class Pet(QWidget):
                 self.write_config()
         finally:
             if not accepted:
+                original.notifications_muted = self.config.notifications_muted
                 self.config = original
                 self.apply_config()
                 self.move(original_position)
@@ -758,13 +977,24 @@ class Pet(QWidget):
             self.dialog = None
 
     def tick(self):
-        if self.focus.tick():
+        focus_finished = self.focus.tick()
+        if focus_finished:
             self.focus_changed()
             self.tray.showMessage('专注完成', '这一段辛苦了，起身伸个懒腰吧。', QSystemTrayIcon.MessageIcon.Information, 6000)
             self.play_ritual('focus.finished', preview=True)
         self.snapshot = countdown(datetime.now(), self.config)
         crossed = self.reminders.update(self.snapshot)
-        self.tray.setToolTip(f"下班搭子 · {self.snapshot.display}")
+        self.dialogue.tick(datetime.now(), monotonic(), self.config,
+                           available=self.dialogue_available(allow_panel=self.focus.active, check_bubble=False),
+                           displayable=self.config.dialogue_proactive or bubble_visible(self.config.bubble_mode, self.hovered, self.clicked_until, monotonic()),
+                           focus=self.focus.active, automatic=not (focus_finished or crossed))
+        if focus_finished:
+            self.dialogue_event('focus.finished', facts={'focusCompleted': True}, allow_panel=True)
+        timely_crossing = bool(crossed and self.snapshot.target and 0 <= (datetime.now() -
+            (self.snapshot.target - timedelta(seconds=crossed[0]))).total_seconds() <= 60)
+        if timely_crossing and self.config.reminders and crossed[0] in (600, 0):
+            self.dialogue_event('schedule.offwork' if crossed[0] == 0 else 'schedule.soon', facts={'observedCrossing': True})
+        self.tray.setToolTip('下班搭子 · 免打扰：聊天消息和集会警告已关闭' if self.config.notifications_muted else f'下班搭子 · {self.snapshot.display}')
         if crossed and self.config.reminders:
             threshold = crossed[0]
             message = "今天辛苦了，收工回家！" if threshold == 0 else f"还有 {threshold // 60} 分钟就下班啦。"
@@ -791,7 +1021,7 @@ class Pet(QWidget):
                     enabled=self.config.pointer_look_enabled and self.config.interactive and not self.dialog and self.press_position is None
                     and not self.dragging and not self.stroke_active))
             over_cat = self.cat_contains(local)
-            over_bubble = self.show_bubble(now) and QRectF(20, 8, 240, 98).contains(QPointF(local) / (self.config.scale / 100))
+            over_bubble = self.show_bubble(now) and QRectF(10, 0, 260, 115).contains(QPointF(local) / (self.config.scale / 100))
             entered = over_cat and not self.hovered
             left = self.hovered and not (over_cat or over_bubble)
             self.hovered = over_cat or over_bubble
@@ -831,6 +1061,10 @@ class Pet(QWidget):
         self.focus_dialog.raise_()
 
     def focus_changed(self):
+        if self.focus.active and not self._dialogue_focus_active:
+            self.dialogue.clear()
+            self.dialogue_event('focus.started', allow_panel=True)
+        self._dialogue_focus_active = self.focus.active
         self.interrupt_autonomy()
         if self.focus.active:
             self.clear_remote()
@@ -872,7 +1106,7 @@ class Pet(QWidget):
                 or QApplication.activeModalWidget() is not None):
             return 'busy'
         if not preview and (self.ball_game or self.menu.isVisible() or any(
-                panel is not None and panel.isVisible() for panel in (self.action_panel, self.package_dialog, self.buddy_dialog, self.focus_dialog, self.creator_dialog))):
+                panel is not None and panel.isVisible() for panel in (self.action_panel, self.package_dialog, self.buddy_dialog, self.rally_dialog, self.focus_dialog, self.creator_dialog))):
             return 'busy'
         if self.runtime.current and self.runtime.context.get('source') != 'autonomous':
             return 'busy'
@@ -890,6 +1124,8 @@ class Pet(QWidget):
 
     def stop_ball(self):
         if self.ball_game:
+            if self.autonomy:
+                self.autonomy.support = getattr(self, 'ball_support', None)
             self.ball_game.stop()
             self.ball_game = None
         if self.ball_window:
@@ -932,8 +1168,11 @@ class Pet(QWidget):
         self.menu.hide()
         direction = 1 if self.x() < (left+right)/2 else -1
         x = max(left+foot.x(), min(right+foot.x(), self.x()+foot.x()+direction*160*scale))
-        ball = Ball(x, left+foot.x(), right+foot.x())
+        ball = Ball(x, scene.bounds.left+16*scale, scene.bounds.right-16*scale,
+                    y=floor-16*scale, support=support)
         self.ball_game = BallGame(self.runtime, ball, (left, right), foot.x(), scale)
+        self.ball_game.scene = scene
+        self.ball_game.pet_floor = floor
         self.ball_position = float(self.x())
         self.ball_screen = screen.name()
         self.ball_bounds = scene.bounds
@@ -951,17 +1190,31 @@ class Pet(QWidget):
         if (not self.config.interactive or self.config.click_through or self.runtime.stopped
                 or self.runtime.suspended or self.dragging or self.stroke_active or self.dialog
                 or QApplication.activeModalWidget() is not None
-                or any(panel is not None and panel.isVisible() for panel in (self.action_panel, self.package_dialog, self.buddy_dialog, self.focus_dialog, self.creator_dialog))):
+                or any(panel is not None and panel.isVisible() for panel in (self.action_panel, self.package_dialog, self.buddy_dialog, self.rally_dialog, self.focus_dialog, self.creator_dialog))):
             self.stop_ball()
             return
         now = monotonic()
         if now-self.ball_checked >= .5:
             screen = QApplication.screenAt(self.frameGeometry().center()) or QApplication.primaryScreen()
             scene = self.desktop_observer.snapshot(screen)
-            if (screen.name() != self.ball_screen or scene.bounds != self.ball_bounds or scene.fullscreen
-                    or self.ball_support is not None and self.ball_support not in scene.surfaces):
+            if (screen.name() != self.ball_screen or scene.bounds != self.ball_bounds or scene.fullscreen):
                 self.stop_ball()
                 return
+            self.ball_game.scene = scene
+            if self.ball_support is not None:
+                previous = self.ball_support
+                support = next((s for s in scene.surfaces if s.key == previous.key
+                    and s.left <= self.ball_position+self.ball_game.foot_x+s.origin_x-previous.origin_x <= s.right), None)
+                if support is None:
+                    # Return control to normal exploration if the pet's ledge disappears.
+                    self.stop_ball()
+                    return
+                self.ball_position += support.origin_x-previous.origin_x
+                self.ball_game.pet_floor = support.y
+                self.move(round(self.ball_position), round(self.y()+support.y-previous.y))
+                self.ball_game.limits = (max(scene.bounds.left, support.left+60*self.ball_game.scale-self.ball_game.foot_x),
+                    min(scene.bounds.right-self.width(), support.right-60*self.ball_game.scale-self.ball_game.foot_x))
+                self.ball_support = support
             self.ball_checked = now
         position = self.runtime_call(lambda: self.ball_game.update(self.ball_position))
         if isinstance(position, (int, float)):
@@ -1001,7 +1254,7 @@ class Pet(QWidget):
         blocked = (self.focus.active or self.press_position is not None or self.dragging or self.stroke_active or self.hovered
                    or self.menu.isVisible() or QApplication.activeModalWidget() is not None
                    or any(panel is not None and panel.isVisible()
-                          for panel in (self.dialog, self.action_panel, self.package_dialog, self.buddy_dialog, self.focus_dialog, self.creator_dialog)))
+                          for panel in (self.dialog, self.action_panel, self.package_dialog, self.buddy_dialog, self.rally_dialog, self.focus_dialog, self.creator_dialog)))
         scale = self.config.scale/100
         foot = self.player.transform.map(QPointF(*self.runtime.data.get('autonomy', {}).get(
             'foot', self.runtime.package.manifest['canvas']['anchor']))) * scale
@@ -1027,27 +1280,32 @@ class Pet(QWidget):
         now = monotonic()
         reacting = self.config.interactive and now < self.reaction_until
         if self.show_bubble(now):
-            p.setPen(QPen(QColor("#E9E2D7"), 1))
-            p.setBrush(QColor(cream))
-            p.drawRoundedRect(QRectF(20, 8, 240, 94), 22, 22)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.drawPolygon(QPolygonF([QPointF(124, 100), QPointF(140, 114), QPointF(151, 100)]))
-            caption = "距离下班还有" if self.snapshot.state == "working" else "今天辛苦啦" if self.snapshot.state == "done" else "好好享受今天"
-            if self.focus.active:
-                caption = '专注已暂停' if self.focus.paused_seconds is not None else '一起专注，慢慢来'
-            text(QRectF(20, 16, 240, 25), caption, 10, "#9A8977")
-            minutes, seconds = divmod(self.focus.remaining, 60)
-            display = f'{minutes:02}:{seconds:02}' if self.focus.active else self.snapshot.display
-            text(QRectF(20, 40, 240, 42), display, 24, "#55483E", True)
-            foot = "快了快了，准备收工" if self.snapshot.state == "working" and self.snapshot.seconds <= 1800 else "搭子陪你，慢慢来" if self.snapshot.state == "working" else "生活时间，现在开始"
-            if self.config.interactive:
-                if self.dragging:
-                    foot = "我们要搬去哪里呀"
-                elif reacting:
-                    foot = self.reaction_message
-                elif self.hovered:
-                    foot = "我在呢，陪你一起等下班"
-            text(QRectF(20, 79, 240, 18), foot, 8, "#A29180")
+            talking = self.config.dialogue_enabled and now < self.dialogue.until and bool(self.dialogue.text) and not self.config.paused
+            if talking:
+                name = (self.companion_memory.entry(self.config.character)['nickname'] or self.runtime.package.name) if self.runtime else ''
+                draw_dialogue(p, self.dialogue.text, name, cream, self.config.color)
+            else:
+                p.setPen(QPen(QColor("#E9E2D7"), 1))
+                p.setBrush(QColor(cream))
+                p.drawRoundedRect(QRectF(20, 8, 240, 94), 22, 22)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.drawPolygon(QPolygonF([QPointF(124, 100), QPointF(140, 114), QPointF(151, 100)]))
+                caption = "距离下班还有" if self.snapshot.state == "working" else "今天辛苦啦" if self.snapshot.state == "done" else "好好享受今天"
+                if self.focus.active:
+                    caption = '专注已暂停' if self.focus.paused_seconds is not None else '一起专注，慢慢来'
+                text(QRectF(20, 16, 240, 25), caption, 10, "#9A8977")
+                minutes, seconds = divmod(self.focus.remaining, 60)
+                display = f'{minutes:02}:{seconds:02}' if self.focus.active else self.snapshot.display
+                text(QRectF(20, 40, 240, 42), display, 24, "#55483E", True)
+                foot = "快了快了，准备收工" if self.snapshot.state == "working" and self.snapshot.seconds <= 1800 else "搭子陪你，慢慢来" if self.snapshot.state == "working" else "生活时间，现在开始"
+                if self.config.interactive:
+                    if self.dragging:
+                        foot = "我们要搬去哪里呀"
+                    elif reacting:
+                        foot = self.reaction_message
+                    elif self.hovered:
+                        foot = "我在呢，陪你一起等下班"
+                text(QRectF(20, 79, 240, 18), foot, 8, "#A29180")
         if self.gift and now < self.gift_until:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor('#FFF5E4'))
@@ -1200,17 +1458,23 @@ class Pet(QWidget):
             self.quit()
 
     def quit(self):
+        self.character_loader.shutdown()
         if self.creator_dialog and not self.creator_dialog.close():
             return
         self.stop_ball()
         self.desktop_observer.close()
         self.updates.shutdown()
+        self.visits.shutdown()
+        self.alerts.shutdown()
+        self.chat.shutdown()
         self.buddy.stop()
         self.hold_timer.stop()
         if self.player:
             self.player.close()
         if self.buddy_dialog:
             self.buddy_dialog.hide()
+        if self.rally_dialog:
+            self.rally_dialog.hide()
         if self.action_panel:
             self.action_panel.hide()
         if self.package_dialog:

@@ -1,0 +1,10 @@
+*
+!Dockerfile
+!server/
+!server/**
+!offwork_pet/
+!offwork_pet/__init__.py
+!offwork_pet/packages.py
+!offwork_pet/package_limits.py
+**/__pycache__
+**/*.pyc

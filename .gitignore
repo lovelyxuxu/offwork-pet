@@ -26,3 +26,12 @@ identity*.json
 *.pfx
 *.p12
 identity*.tmp
+.env
+/backups/
+
+/data/
+/.codex-attachments/
+/.workbuddy/
+/vibe_videos/
+*.petpack
+!/offwork_pet/assets/starter-packs/offwork-seed.petpack

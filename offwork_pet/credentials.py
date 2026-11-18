@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import time
 from urllib.parse import urlsplit
 
 from .core import data_dir
@@ -49,14 +50,34 @@ class IdentityStore:
         key = hashlib.sha256(self.endpoint.encode()).hexdigest()[:24]
         self.path = Path(directory or data_dir()) / f'identity-{key}.json'
         self.record = {'relation_id': '', 'pending_unlink': '', 'ended_seen': ''}
+        self.reset = False
         if self.path.exists():
-            loaded = json.loads(self.path.read_text(encoding='utf-8'))
-            if not isinstance(loaded, dict):
-                raise ValueError('设备身份文件格式不正确')
-            self.record.update(loaded)
+            loaded = self._load()
+            if loaded is None:
+                self._quarantine()
+                self.reset = True
+            else:
+                self.record.update(loaded)
         self.token = ''
         if self.record.get('protected_token'):
             self.token = crypt(base64.b64decode(self.record['protected_token'], validate=True), decrypt=True).decode()
+
+    def _load(self):
+        raw = self.path.read_bytes()
+        for encoding in ('utf-8', 'utf-8-sig'):
+            try:
+                loaded = json.loads(raw.decode(encoding))
+            except ValueError:
+                continue
+            return loaded if isinstance(loaded, dict) else None
+        return None
+
+    def _quarantine(self):
+        backup = self.path.with_name(f'{self.path.name}.corrupt-{int(time.time())}')
+        try:
+            self.path.replace(backup)
+        except OSError:
+            pass  # 备份失败不阻塞重置，save() 会覆盖损坏文件
 
     def set_identity(self, data):
         device, token = data.get('device_id'), data.get('token')

@@ -1,14 +1,11 @@
 """Create, validate, export and preview data-only character packages."""
-import argparse
 import json
 from pathlib import Path
 import shutil
-import sys
 from tempfile import TemporaryDirectory
-from zipfile import ZipFile, ZIP_DEFLATED
 
 from PIL import Image, ImageSequence
-from .packages import PackageLibrary, PackageError, load_package, identifier
+from .packages import PackageError, load_package, identifier
 
 
 def write_json(path, data):

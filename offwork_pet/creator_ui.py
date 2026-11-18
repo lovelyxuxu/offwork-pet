@@ -1,8 +1,6 @@
 """Visual authoring of data-only packs, using the same validator and player as the pet."""
 from copy import deepcopy
-import json
 from pathlib import Path
-import shutil
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from zipfile import ZipFile, ZIP_DEFLATED
@@ -10,7 +8,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox, QPushButton, QVBoxLayout, QWidget)
+    QHBoxLayout, QLineEdit, QListWidget, QMessageBox, QPushButton, QVBoxLayout, QWidget)
 
 from .behavior import BehaviorRuntime
 from .pack_builder import make_template, add_action, write_json

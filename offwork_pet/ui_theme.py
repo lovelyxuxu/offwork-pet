@@ -1,8 +1,78 @@
 """Shared desktop surfaces, with quiet colors and generous touch targets."""
 from pathlib import Path
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QApplication, QFrame, QLabel, QScrollArea, QVBoxLayout
+import weakref
+from shiboken6 import isValid
+from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtGui import QFont, QWheelEvent
+from PySide6.QtWidgets import (QAbstractScrollArea, QAbstractSlider, QAbstractSpinBox,
+    QApplication, QComboBox, QFrame, QLabel, QScrollArea, QScrollBar, QVBoxLayout, QWidget)
+
+
+class InputWheelGuard(QObject):
+    """Only a deliberately clicked, still-focused value control may wheel-edit."""
+    def __init__(self, app):
+        super().__init__(app)
+        self.armed = None
+
+    @staticmethod
+    def control(widget):
+        while isinstance(widget, QWidget):
+            if isinstance(widget, (QAbstractSpinBox, QComboBox, QAbstractSlider)) and not isinstance(widget, QScrollBar):
+                return widget
+            widget = widget.parentWidget()
+        return None
+
+    def eventFilter(self, watched, event):
+        kind = event.type()
+        if kind not in (QEvent.Type.MouseButtonPress, QEvent.Type.FocusIn, QEvent.Type.FocusOut, QEvent.Type.Wheel, QEvent.Type.Polish):
+            return False
+        control = self.control(watched)
+        if kind == QEvent.Type.Polish and control is watched:
+            control.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        elif kind == QEvent.Type.MouseButtonPress:
+            if control is not None:
+                self.armed = weakref.ref(control)
+            else:
+                armed = self.armed() if self.armed else None
+                # The same unhandled click can bubble through the field's
+                # parents. It must not immediately disarm the clicked field.
+                if not (armed is not None and isValid(armed) and isinstance(watched, QWidget) and watched.isAncestorOf(armed)
+                        and armed.rect().contains(armed.mapFromGlobal(event.globalPosition().toPoint()))):
+                    self.armed = None
+        elif kind == QEvent.Type.FocusOut:
+            if (control is not None and self.armed and self.armed() is control
+                    and event.reason() != Qt.FocusReason.PopupFocusReason
+                    and (not isinstance(control, QComboBox) or event.reason() == Qt.FocusReason.ActiveWindowFocusReason)):
+                self.armed = None
+        elif kind == QEvent.Type.FocusIn and event.reason() in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason):
+            self.armed = None
+        elif kind == QEvent.Type.Wheel and control is not None:
+            focus = QApplication.focusWidget()
+            if self.armed and self.armed() is control and focus is not None and (focus is control or control.isAncestorOf(focus)):
+                return False
+            # Forward directly to the surrounding page; never let hovering a
+            # value field consume the scroll or change its value.
+            parent = control.parentWidget()
+            while parent is not None and not isinstance(parent, QAbstractScrollArea):
+                parent = parent.parentWidget()
+            if parent is not None:
+                viewport = parent.viewport()
+                forwarded = QWheelEvent(viewport.mapFromGlobal(event.globalPosition().toPoint()).toPointF(),
+                    event.globalPosition(), event.pixelDelta(), event.angleDelta(), event.buttons(),
+                    event.modifiers(), event.phase(), event.inverted())
+                QApplication.sendEvent(viewport, forwarded)
+                event.accept()
+            else:
+                event.ignore()
+            return True
+        return False
+
+
+def protect_input_wheels():
+    app = QApplication.instance()
+    if not hasattr(app, '_input_wheel_guard'):
+        app._input_wheel_guard = InputWheelGuard(app)
+        app.installEventFilter(app._input_wheel_guard)
 
 
 STYLE = '''
@@ -71,6 +141,7 @@ QCheckBox::indicator:checked { image: url("%s"); }
 def style_window(window):
     # QApplication owns the shared style; short-lived per-widget styles can crash Qt on exit.
     app = QApplication.instance()
+    protect_input_wheels()
     if app.style().objectName().lower() != 'fusion':
         app.setStyle('Fusion')
     window.setStyleSheet(STYLE)

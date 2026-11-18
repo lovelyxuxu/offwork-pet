@@ -18,7 +18,7 @@ class GuiTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        self.pet = Pet(Config(character='lulu'), persist=False)
+        self.pet = Pet(Config(character='gugagaga'), persist=False)
         self.pet.animation.stop()
         self.pet.tick_timer.stop()
 
@@ -141,7 +141,7 @@ class GuiTests(unittest.TestCase):
         self.assertIsNone(self.pet.buddy.identity)
         dialog = SettingsDialog(self.pet.config, self.pet)
         self.assertEqual(dialog.character.count(), len(self.pet.library.entries()) + 1)
-        for character in ('lulu', 'lumei'):
+        for character in ('gugagaga', 'noah-lulu'):
             dialog.character.setCurrentIndex(dialog.character.findData(character))
             self.assertEqual(dialog.result_config(self.pet.config).character, character)
             self.pet.config.character = character
@@ -151,9 +151,9 @@ class GuiTests(unittest.TestCase):
 
     def test_remote_expiry_dedup_and_local_action_priority(self):
         self.pet.buddy.ready = True
-        self.pet.buddy.relation = {'id': 'relation', 'partner_id': 'other', 'character': 'lumei'}
+        self.pet.buddy.relation = {'id': 'relation', 'partner_id': 'other', 'character': 'noah-lulu'}
         self.pet.buddy.clock_offset = 0
-        event = {'interactionId': 'pinch', 'action_id': 'one', 'relation_id': 'relation',
+        event = {'interactionId': 'wave', 'action_id': 'one', 'relation_id': 'relation',
                  'capabilityRevision': self.pet.runtime.revision, 'expires_at': time.time() + 4}
         with patch.object(self.pet.buddy, 'acknowledge') as ack:
             self.pet.receive_remote({**event, 'expires_at': time.time() - 1})
@@ -165,7 +165,7 @@ class GuiTests(unittest.TestCase):
             self.assertIsNone(self.pet.runtime.current)
             self.pet.dragging = False
             self.pet.receive_remote(event)
-            self.assertEqual(self.pet.runtime.current, 'cheek_reply')
+            self.assertEqual(self.pet.runtime.current, 'wave')
             self.pet.receive_remote(event)
             self.assertEqual(self.pet.runtime.queue, [])
             self.pet.set_paused(True)
@@ -173,9 +173,9 @@ class GuiTests(unittest.TestCase):
 
     def test_remote_animation_budget(self):
         self.pet.buddy.ready = True
-        self.pet.buddy.relation = {'id': 'relation', 'partner_id': 'other', 'character': 'lulu'}
+        self.pet.buddy.relation = {'id': 'relation', 'partner_id': 'other', 'character': 'gugagaga'}
         self.pet.remote_plays.extend([monotonic()] * 3)
-        event = {'interactionId': 'bonk', 'action_id': 'new', 'relation_id': 'relation',
+        event = {'interactionId': 'jump', 'action_id': 'new', 'relation_id': 'relation',
                  'capabilityRevision': self.pet.runtime.revision, 'expires_at': time.time() + 4}
         with patch.object(self.pet.buddy, 'acknowledge') as ack:
             self.pet.receive_remote(event)
@@ -187,7 +187,7 @@ class GuiTests(unittest.TestCase):
         from tempfile import TemporaryDirectory
         previous = self.pet.runtime
         previous_player = self.pet.player
-        self.pet.select_package('lumei')
+        self.pet.select_package('noah-lulu')
         self.assertTrue(previous.stopped)
         self.assertEqual(previous_player.cache.bytes, 0)
         self.pet.select_package(None)
@@ -210,8 +210,8 @@ class GuiTests(unittest.TestCase):
         self.pet.buddy.ready = True
         self.pet.buddy.relation = {'id': 'r', 'partner_id': 'b'}
         old = self.pet.runtime.revision
-        self.pet.select_package('lumei')
-        event = {'interactionId': 'pinch', 'action_id': 'old', 'relation_id': 'r',
+        self.pet.select_package('noah-lulu')
+        event = {'interactionId': 'wave', 'action_id': 'old', 'relation_id': 'r',
                  'capabilityRevision': old, 'expires_at': time.time()+4}
         with patch.object(self.pet.buddy, 'acknowledge') as ack:
             self.pet.receive_remote(event)
@@ -353,13 +353,13 @@ class GuiTests(unittest.TestCase):
         original = self.pet.runtime
         digest = original.package.digest
         with TemporaryDirectory() as folder:
-            archive, _ = create_pack(folder, 'lulu', version='2.0.0')
+            archive, _ = create_pack(folder, 'gugagaga', version='2.0.0')
             with patch('offwork_pet.app.PackagePlayer', side_effect=PackageError('cannot prepare new runtime')):
                 with self.assertRaises(PackageError):
                     self.pet.import_package(archive)
         self.assertIs(self.pet.runtime, original)
         self.assertFalse(original.stopped)
-        self.assertEqual(self.pet.library.load('lulu').digest, digest)
+        self.assertEqual(self.pet.library.load('gugagaga').digest, digest)
 
     def test_action_shelf_stays_open_and_tracks_package_and_position(self):
         self.pet.open_actions()
@@ -390,14 +390,18 @@ class GuiTests(unittest.TestCase):
         client.identity = SimpleNamespace(record={})
         client.ready = client.enabled = True
         client.status = 'available'
+        client.service_features = {'visits/v1'}
         client.relation = {'id': 'r', 'capabilities': {'revision': 'one', 'interactions': [
-            {'id': 'wave', 'label': '挥挥手'}, {'id': 'jump', 'label': '跳一下'}]}}
+            {'id': 'wave', 'label': '挥挥手'}, {'id': 'jump', 'label': '跳一下'}]}, 'visitSupport': True, 'allowVisits': True}
+        self.pet.visits.outgoing = {'id': 'visit-one', 'relation_id': 'r', 'stage': 'active'}
         self.pet.open_actions(1)
         shelf = self.pet.action_panel
-        with patch.object(client, 'queue_action') as send:
+        with patch.object(self.pet.visits, 'play') as send:
             shelf.remote_buttons[0].click()
             shelf.remote_buttons[1].click()
             self.assertEqual(send.call_count, 2)
+        self.assertEqual([b.text() for b in shelf.remote_buttons],
+                         [i['label'] for i in self.pet.character_capabilities()['interactions']])
         self.assertTrue(shelf.isVisible())
         client.ready = False
         client.changed.emit()

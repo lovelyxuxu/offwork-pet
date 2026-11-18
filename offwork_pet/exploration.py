@@ -11,7 +11,7 @@ class Explorer:
         self.phase = None
         self.target = self.support = None
         self.visited = []
-        self.next_due = clock()+60
+        self.next_due = clock()+15
         self.last_tick = clock()
 
     @property
@@ -21,23 +21,26 @@ class Explorer:
     def interrupt(self, config):
         self.runtime.cancel('exploration')
         self.phase, self.target = None, None
-        self.next_due = self.clock()+max(30, self.rng.uniform(config.activity_min_seconds, config.activity_max_seconds)*3)
+        self.next_due = self.clock()+max(10, self.rng.uniform(config.activity_min_seconds, config.activity_max_seconds))
         self.last_tick = self.clock()
 
     def choose(self, scene, position, foot, size, scale):
         candidates = []
         x, y = position
         margin = min(size[0]/2, 110*scale)
+        # The host window includes a bubble above the 170px artwork. The empty
+        # bubble area may extend offscreen while the entire character stays visible.
+        top = scene.bounds.top-max(0, foot[1]-170*scale)
         for surface in scene.surfaces:
             left = max(scene.bounds.left, surface.left+margin-foot[0])
             right = min(scene.bounds.right-size[0], surface.right-margin-foot[0])
             target_y = surface.y-foot[1]
-            if right < left or target_y < scene.bounds.top or target_y-y < -self.spec.get('maxRise', 220)*scale:
+            if right < left or target_y < top or target_y-y < -self.spec.get('maxRise', 1200)*scale:
                 continue
-            if target_y-y > self.spec.get('maxDrop', 350)*scale:
+            if target_y-y > self.spec.get('maxDrop', 1200)*scale:
                 continue
             nearest = max(left, min(right, x))
-            if abs(nearest-x) > self.spec.get('maxDistance', 420)*scale:
+            if abs(nearest-x) > self.spec.get('maxDistance', 1600)*scale:
                 continue
             low, high = max(left, x-240*scale), min(right, x+240*scale)
             destination = self.rng.uniform(low, high) if low <= high else nearest
@@ -46,6 +49,10 @@ class Explorer:
             candidates.append((surface, destination, target_y))
         if not candidates:
             return None
+        # Prefer the app's ledges over another trip along the desktop floor.
+        ledges = [item for item in candidates if item[0].key != 'desktop'
+                  and (self.support is None or item[0].key != self.support.key)]
+        candidates = ledges or candidates
         fresh = [item for item in candidates if item[0].key not in self.visited[-3:]]
         return self.rng.choice(fresh or candidates)
 
@@ -60,6 +67,9 @@ class Explorer:
             if self.active:
                 self.interrupt(config)
             return None
+        if (not self.active and now >= self.next_due and self.runtime.current
+                and self.runtime.context.get('source') == 'autonomous'):
+            self.runtime.cancel('autonomous')
         if self.runtime.current and self.runtime.context.get('source') != 'exploration' or self.runtime.queue:
             if self.active:
                 self.interrupt(config)
@@ -67,6 +77,7 @@ class Explorer:
         if not self.active:
             if now < self.next_due or self.runtime.state not in self.runtime.data['autonomy']['states']:
                 return None
+            self.support = support
             choice = self.choose(scene, position, foot, size, scale)
             if choice is None:
                 self.interrupt(config)
@@ -82,10 +93,22 @@ class Explorer:
             self.interrupt(config)
             return position
         # Re-plan after geometry changes; never keep flying towards a stale window.
-        if self.target not in scene.surfaces:
+        matches = [s for s in scene.surfaces if s.key == self.target.key
+                   and s.right-s.left >= 2*min(size[0]/2, 110*scale)]
+        if matches:
+            target = min(matches, key=lambda s: abs((s.left+s.right)/2-(self.target_x+foot[0])))
+            margin = min(size[0]/2, 110*scale)
+            left = max(scene.bounds.left, target.left+margin-foot[0])
+            right = min(scene.bounds.right-size[0], target.right-margin-foot[0])
+            if left <= right and target.y >= scene.bounds.top+min(foot[1], 170*scale):
+                self.target_x = max(left, min(right, self.target_x+target.origin_x-self.target.origin_x))
+                self.target_y, self.target = target.y-foot[1], target
+            else:
+                matches = []
+        if not matches:
             self.runtime.cancel('exploration')
             below = [s for s in scene.surfaces if s.left <= position[0]+foot[0] <= s.right
-                     and s.y >= position[1]+foot[1]-1 and s.y-foot[1] >= scene.bounds.top]
+                     and s.y >= position[1]+foot[1]-1 and s.y >= scene.bounds.top+min(foot[1], 170*scale)]
             if not below:
                 self.support = None
                 self.interrupt(config)
@@ -108,7 +131,8 @@ class Explorer:
             duration = self.spec.get('jumpDurationMs', 900)/1000
             self.progress = min(duration, self.progress+elapsed)
             t = self.progress/duration
-            arc = max(0, min(70*scale, min(self.start[1], self.target_y)-scene.bounds.top))
+            top = scene.bounds.top-max(0, foot[1]-170*scale)
+            arc = max(0, min(70*scale, min(self.start[1], self.target_y)-top))
             destination = (self.start[0]+(self.target_x-self.start[0])*t,
                            self.start[1]+(self.target_y-self.start[1])*t-4*arc*t*(1-t))
             if t >= 1:
@@ -144,4 +168,7 @@ class Explorer:
             self.visited = (self.visited+[self.target.key])[-8:]
         elif self.phase == 'rest' and self.runtime.current is None:
             self.interrupt(config)
+        if self.phase in ('land', 'rest'):
+            self.support = self.target
+            return self.target_x, self.target_y
         return position

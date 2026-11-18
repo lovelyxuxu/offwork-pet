@@ -59,6 +59,16 @@ class ActionPanel(QDialog):
         root.addWidget(segments)
         self.context = label('', 'muted')
         root.addWidget(self.context)
+        visit_row = QHBoxLayout()
+        self.visit_start = QPushButton('去搭子家串门')
+        self.visit_leave = QPushButton('告别回家')
+        self.visit_dismiss = QPushButton('送客')
+        self.visit_start.clicked.connect(pet.visits.start)
+        self.visit_leave.clicked.connect(pet.visits.leave)
+        self.visit_dismiss.clicked.connect(pet.visits.dismiss)
+        for button in (self.visit_start, self.visit_leave, self.visit_dismiss):
+            visit_row.addWidget(button)
+        root.addLayout(visit_row)
         self.pages = QStackedWidget()
         self.grids = []
         for _ in range(2):
@@ -76,7 +86,7 @@ class ActionPanel(QDialog):
         root.addWidget(self.feedback)
         play = QHBoxLayout()
         self.ball_button = QPushButton('玩小球')
-        self.ball_button.setToolTip('拖动小球，松手让它滚动；右键小球收起。需要角色提供追球动作。')
+        self.ball_button.setToolTip('向任意方向拖动并松手抛球，落在可见窗口边缘后滚动；右键收起。')
         self.ball_button.clicked.connect(self.play_ball)
         self.ritual_button = QPushButton('下班彩排')
         self.ritual_button.setToolTip('提前看看角色迎接下班的反应，不改变下班时间。')
@@ -98,6 +108,7 @@ class ActionPanel(QDialog):
         root.addLayout(footer)
         pet.buddy.changed.connect(self.refresh)
         pet.buddy.notice.connect(self.show_notice)
+        pet.visits.changed.connect(self.refresh)
         self.select_tab(0)
 
     def more(self):
@@ -147,26 +158,40 @@ class ActionPanel(QDialog):
         nickname = self.pet.companion_memory.entry(runtime.package.id)['nickname'] if runtime else ''
         self.title.setText(nickname or (runtime.package.name if runtime else '陪它玩一会儿'))
         self.refresh_playback()
-        capabilities = (client.relation or {}).get('capabilities') or {}
+        visits = self.pet.visits
+        capabilities = (self.pet.character_capabilities() or {}) if client.relation else {}
         remote_key = ((client.relation or {}).get('id'), capabilities.get('revision'))
         if remote_key != self.remote_key or not self.grids[1].count():
             self.remote_key = remote_key
             self.remote_buttons = self.rebuild(self.grids[1], capabilities.get('interactions', []),
-                self.play_remote, ('把陪伴送给搭子', '在下方“搭子设置”连接对方，互动动作会自动出现在这里。' if not client.relation
-                                   else '对方上线并加载角色后，这里会显示可用互动。'))
-        available = client.ready and bool(client.relation) and client.status == 'available'
+                self.play_remote, ('带着自己的角色去串门', '角色包提供的访客互动会出现在这里。'))
+        available = client.ready and bool(client.relation) and client.status == 'available' and visits.supported
         pending = bool(client.identity and client.identity.record.get('pending_unlink'))
+        active = bool(visits.outgoing and visits.outgoing['stage'] == 'active')
         for button in self.remote_buttons:
-            button.setEnabled(available and not pending)
+            button.setEnabled(available and active and not pending)
+        for button in (self.visit_start, self.visit_leave, self.visit_dismiss):
+            button.setVisible(self.pages.currentIndex() == 1)
+        self.visit_start.setEnabled(bool(available and not pending and runtime and not runtime.stopped and not visits.starting
+            and not visits.outgoing and not visits.incoming and (client.relation or {}).get('allowVisits')))
+        self.visit_start.setText('正在准备…' if visits.starting else '去搭子家串门')
+        self.visit_leave.setEnabled(bool(visits.outgoing))
+        self.visit_dismiss.setEnabled(bool(visits.incoming))
         if self.pages.currentIndex() == 0:
             self.context.setText('只让自己的宠物表演 · 点击即可播放' if self.pet.config.interactive else '本地互动已关闭，可在设置中开启')
         elif not client.enabled:
             self.context.setText(client.connection_text if client.config.network_enabled else '联网未开启 · 本地动作照常可用')
         elif not client.ready:
             self.context.setText(client.connection_text)
+        elif client.relation and not visits.supported:
+            self.context.setText('串门需要双方客户端和搭子服务升级 · 自己的桌宠照常陪伴')
+        elif visits.incoming:
+            self.context.setText('搭子正在这里做客 · 点击访客选择动作，或随时送客')
+        elif visits.outgoing:
+            self.context.setText('你的角色正在搭子家做客 · 下方动作只让访客表演' if active else '正在把角色送到搭子桌面…')
         else:
             status = {'available': '可互动', 'paused': '暂停接收', 'offline': '离线'}.get(client.status, '状态未知')
-            self.context.setText(f"{self.pet.config.buddy_note or '我的搭子'} · {status}" if client.relation else '尚未连接搭子')
+            self.context.setText(f"{self.pet.config.buddy_note or '我的搭子'} · {status} · 先去串门，再选择访客动作" if client.relation else '尚未连接搭子')
 
     def play_local(self, identifier, title):
         if not self.pet.runtime or self.pet.runtime.revision != self.local_key:
@@ -218,11 +243,11 @@ class ActionPanel(QDialog):
         super().hideEvent(event)
 
     def play_remote(self, identifier, title):
-        capabilities = (self.pet.buddy.relation or {}).get('capabilities') or {}
+        capabilities = self.pet.character_capabilities() or {}
         if ((self.pet.buddy.relation or {}).get('id'), capabilities.get('revision')) != self.remote_key:
             self.refresh()
             return
-        self.pet.buddy.queue_action(identifier)
+        self.pet.visits.play(identifier)
 
     def show_notice(self, message):
         if self.pages.currentIndex() == 1:

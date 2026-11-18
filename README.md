@@ -1,53 +1,20 @@
 # 下班搭子 · Offwork Pet
 
-运行在 Windows 桌面角落的角色陪伴系统，陪你等下班，也能与一位搭子远程互动。
+Windows 桌面角色、下班倒计时和搭子互动。Linux 或其他支持 Docker 的系统可运行独立联网服务。
 
-`v0.6.0-preview.2`：桌面生活与互动版。保留原有角色包、倒计时、搭子连接和增量更新，增加以下可体验功能：
+| 模块 | 源码 |
+| --- | --- |
+| Windows 桌宠 | [offwork_pet](offwork_pet) |
+| 搭子、集会、聊天、角色资源及管理 API | [server](server) |
+| macOS 集会接收端 RallyLite | [rally-lite](rally-lite) · [预览版下载](https://github.com/lovelyxuxu/offwork-pet/releases/tag/macos-preview) |
+| 官网与角色目录 API | [offwork-pet-web](https://github.com/lovelyxuxu/offwork-pet-web) |
+| Android 接收端 | [offwork-pet-app](https://github.com/lovelyxuxu/offwork-pet-app) · [下载](https://github.com/lovelyxuxu/offwork-pet-app/releases) |
+| 管理前端（Vue） | [offwork-pet-admin-web](https://github.com/lovelyxuxu/offwork-pet-admin-web) |
+| 角色制作工具与示例 | [offwork-pet-models](https://github.com/lovelyxuxu/offwork-pet-models) |
 
-- **自然探索**：支持的角色先观察，再移动/跳到附近可达窗口边缘，最后休息；短期记住访问过的位置，手动操作优先。可选识别前台应用提供的内部面板边界。
-- **桌面小球**：右键动作面板点“玩小球”，左右拖动后松手，角色追过去碰球；右键小球收起。
-- **下班仪式**：下班前十分钟和到点时响应包内规则；“下班彩排”可提前体验。
-- **本机记忆**：为每个角色保存昵称和互动偏好，影响自主动作的选择，可关闭或重置。
-- **搭子礼物**：动态互动里新增送咖啡、小花和星星，接收后在角色旁停留一会儿。
-- **专注陪伴**：1–180 分钟，可暂停、继续、结束；期间暂停自主活动和远程互动，结束后提醒休息。
-- **角色制作室**：导入 PNG/GIF/WebP，添加动作、台词、互动区域与触发规则，实时预览并导出 `.petpack`，也可打开已有包编辑。
+## Windows 桌宠
 
-[下载 Windows 预览版 v0.6.0-preview.2](http://106.54.27.8/offwork-pet/releases/OffworkPet-v0.6.0-preview.2-CharacterPacks.zip)。已安装支持自动更新的版本可在程序内检查更新。
-
-使用入口、角色支持范围和包声明见 [桌面生活与互动](docs/桌面生活与互动.md)，合并设计见 [桌面生活与互动设计](docs/桌面生活与互动设计.md)。
-
-## 当前功能
-
-- 自主活动默认随机间隔 20–60 秒，可在设置中调整；支持原地活动、当前位置附近和桌面/窗口边缘漫步。角色素材决定能否走动，详见 [自主活动与窗口漫步](docs/自主活动与窗口漫步.md)。
-- 右键面板下方“换角色”导入、切换、更新、删除 `.petpack`，动作数量和名称可完全不同；删光后可以重新导入。
-- 透明悬浮窗、显式序列帧与图集、区域点击/长按/悬停、Alt 抚摸、定时规则及包声明的动作菜单；具体反应由素材和规则决定。
-- 初始提供原有噜噜、噜妹，以及网站的“噜噜（noah）”“噜妹（草莓睡衣）”“月薪猫”五个独立角色包，来源与授权说明见 [第三方说明](THIRD_PARTY_NOTICES.md)。
-- 每秒更新下班倒计时，下班后显示“已下班”，工作日午夜自动重新计时。
-- 自定义每周工作日、下班时间，以及仅当天生效的临时时间。
-- 奶油橘 / 薄荷绿 / 云朵蓝气泡主题，50%–200% 大小，不透明度 20%–100%。调整大小和不透明度实时预览，取消后恢复。
-- 气泡支持始终展示、悬停展示、点击展示、悬停或点击展示、始终隐藏五种模式。点击展示时长可设为 2–30 秒，默认 6 秒。
-- 拖动移动并记住位置，置顶、鼠标穿透、系统托盘、单实例保护。
-- 提前 30 分钟、10 分钟和到点提醒；声音默认关闭。
-- 可选登录 Windows 时自动启动，默认关闭。
-- 配置保存到 `%APPDATA%\OffworkPet\config.json`，不上传个人设置。
-- 默认关闭联网；右键面板下方“搭子”主动开启，无需注册。支持一次性邀请、动态互动能力、暂停、断线重连、解绑及离线解除待同步。新版动态互动要求服务端支持 v2 协议。
-
-## 双人互动
-
-客户端内置产品的搭子服务，用户无需填写 IP、端口或其他联网信息。双方在右键面板下方“搭子”中开启联网，一方生成邀请码，另一方输入即可配对。联网默认关闭，本地功能可独立使用。
-
-以下是开发者的本地服务启动方式，日常使用无需运行：
-
-```powershell
-python -m pip install -r server/requirements.txt
-python -m server --port 8765
-```
-
-本机联调使用 `python tests/integration_network.py`，脚本通过代码注入临时本机地址，不连接产品服务。完整的服务运行、部署和联调说明见 [联网与部署](docs/联网与部署.md)。
-
-## 运行
-
-Windows 10/11，Python 3.10+。推荐创建独立环境：
+安装 Python 3.10 或以上版本，在仓库根目录运行：
 
 ```powershell
 python -m venv .venv
@@ -55,46 +22,22 @@ python -m venv .venv
 .\.venv\Scripts\python.exe main.py
 ```
 
-也可以双击 `start.bat`（需先安装依赖）。默认周一到周五 18:00 下班。
+仓库包含原创示例角色“小芽”。右键打开“外观与设置 → 角色管理”可导入自行制作或已获授权的 `.petpack`。见 [角色包制作与使用](docs/角色包制作与使用.md)。联网功能需在“搭子 → 服务器”中填写地址并开启。
 
-拖动宠物移动，单击与长按的反应由角色包决定，双击打开设置，右键打开动作与互动面板。按住 `Alt` 并按住鼠标来回移动可触发包声明的抚摸反应。按住 `Ctrl` 滚动鼠标滚轮调整大小，按住 `Ctrl + Shift` 滚动调整不透明度，快捷调整会自动保存。拖动和点击分开判断，拖动不会误触点击气泡。
+## 自托管
 
-鼠标穿透开启后，拖动、点击和滚轮快捷操作不可用，悬停气泡仍可显示。通过系统托盘右键关闭穿透，或选择“显示宠物 / 恢复位置”。托盘双击也能打开设置。
-
-气泡默认“悬停或点击时展示”：平时隐藏，鼠标移到宠物上或单击后显示，点击后默认停留 6 秒。可在设置中改成始终展示。悬停模式离开宠物及气泡后隐藏；始终隐藏模式中摸头动作照常回应，但不显示气泡。升级会兼容旧版气泡开关，已保存的展示方式仍可自行选择。
-
-互动依据鼠标位置、操作及可见窗口的位置与边界；可选读取前台应用暴露的控件类型和矩形，不截图、不读取窗口文字或启用摄像头。
-
-## 打包为 Windows 应用
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\build.ps1
+```sh
+python tools/init_selfhost.py
+docker compose up -d --build
+docker compose ps
 ```
 
-生成 `dist\v0.6.0-preview.2-CharacterPacks\OffworkPet\OffworkPet.exe` 和 `dist\OffworkPet-v0.6.0-preview.2-CharacterPacks.zip`。发布包包含 `版本说明.txt` 和初始角色包，不包含 `docs`、建模工程或个人配置。目标电脑无需安装 Python 或 Blender。升级时先退出旧宠物，再完整解压并启动新版。构建依赖和产物不提交 Git。
+默认监听 `127.0.0.1:8765`。访问 `http://127.0.0.1:8765/admin/hosting` 可配置接入码及实例；管理界面位于 `/admin/`。Compose 包含 PostgreSQL，HTTPS、持久化、迁移和备份见 [自托管部署](docs/自托管部署.md)。
 
-正式运行和打包只使用 `offwork_pet/assets/starter-packs` 中的标准角色包。`tools/make_starter_packs.py` 用历史 PNG/Qt 绘制素材重新制作初始包，普通用户不需要运行。`tools/render_lulu_sprites.py` 仍是可选的旧建模素材渲染辅助工具，运行需要原工程，不属于角色播放依赖。
+本地仅运行 Python API 可执行 `python -m pip install -r server/requirements.txt` 和 `python -m server --port 8765`。
 
-## 测试
+## 测试与许可
 
-```powershell
-python -m pip install -r requirements-dev.txt
-python -m unittest discover -s tests -v
-python tests/integration_network.py
-```
+开发环境依赖见 `requirements-dev.txt`。后端可运行 `python -m unittest discover -s tests -p "test_selfhost*.py"`。部分桌面回归使用原角色包或台词包作为素材夹具，运行这些测试前需要自行准备相应授权和素材。
 
-提醒依据运行期间跨过阈值触发，启动时不会补发已过期提醒；休眠恢复后仅提醒最近跨过的一个节点。系统时间回拨不会重复触发同一节点。临时时间也可以把非工作日设为当天工作日。
-
-## 边界与后续
-
-当前按本机时间计算同一天的下班时间；暂不支持跨夜班、法定节假日自动同步和轮班日历。角色包已支持导入，已提供基础可视化角色制作室；在线工坊、骨骼编辑与实时 3D 尚未包含。Windows 通知是否出现受系统通知设置和勿扰模式影响。
-
-如果改动源代码或移动应用目录，请重新开启一次“登录 Windows 时自动启动”，以更新启动路径。卸载前先关闭该选项。
-
-## 许可证与隐私
-
-项目自有程序代码采用 [MIT 许可证](LICENSE)，第三方模型及其衍生动画素材保留原许可和署名，详见 [第三方说明](THIRD_PARTY_NOTICES.md) 与 [形象来源](docs/形象来源.md)。角色名称与形象的相关权利不因代码开源而转移。
-
-界面使用 PySide6 / Qt，遵循其适用许可；分发应保留随包 Qt/PySide6 许可文件。
-
-产品搭子服务地址由应用维护，当前使用 HTTP/WS；后续升级 HTTPS/WSS 时由产品更新配置，用户无需自行设置。请勿提交本机服务器记录、`.env`、个人配置、设备身份、数据库或密钥。相关本机文件已加入 `.gitignore`。
+自有程序、文档和示例角色采用 [MIT](LICENSE)。第三方组件保留其自身许可，历史素材的来源详见 [第三方说明](THIRD_PARTY_NOTICES.md)。

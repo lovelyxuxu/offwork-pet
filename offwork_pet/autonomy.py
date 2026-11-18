@@ -36,6 +36,7 @@ class AutonomyController:
         self.travel = 0
         if detach:
             self.support = self.home = None
+            self.explorer.support = None
         self.delay(config)
 
     def _surface(self, scene, position, foot, size, scale):
@@ -44,7 +45,7 @@ class AutonomyController:
         matching = [surface for surface in scene.surfaces
                     if surface.left+margin <= x+(surface.origin_x-self.support.origin_x
                         if self.support and surface.key == self.support.key else 0) <= surface.right-margin
-                    and surface.y >= scene.bounds.top+foot[1]]
+                    and surface.y >= scene.bounds.top+min(foot[1], 170*scale)]
         if self.support:
             same = [surface for surface in matching if surface.key == self.support.key]
             if same:

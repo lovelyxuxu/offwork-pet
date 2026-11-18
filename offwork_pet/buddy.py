@@ -8,6 +8,7 @@ from PySide6.QtNetwork import QAbstractSocket, QNetworkAccessManager, QNetworkRe
 from PySide6.QtWebSockets import QWebSocket
 
 from .credentials import IdentityStore, normalize_endpoint
+from .device_info import collect_device_info
 
 SERVICE_ENDPOINT = 'http://106.54.27.8'
 
@@ -16,12 +17,15 @@ class BuddyClient(QObject):
     changed = Signal()
     notice = Signal(str)
     incoming = Signal(dict)
+    visit_event = Signal(dict)
+    rally_event = Signal(dict)
+    chat_event = Signal(dict)
 
     def __init__(self, config, parent=None, persist=True, *, endpoint=None):
         super().__init__(parent)
         self.config, self.persist = config, persist
-        # A constructor override isolates local integration tests; it is not a user setting.
-        self.endpoint = normalize_endpoint(SERVICE_ENDPOINT if endpoint is None else endpoint)
+        self.endpoint = normalize_endpoint(endpoint or config.server_url) if (endpoint or config.server_url) else ''
+        self.access_code = ''
         self.capabilities_provider = lambda: None
         self.identity = None
         self.socket = None
@@ -29,6 +33,8 @@ class BuddyClient(QObject):
         self.registration = None
         self.preflight = None
         self.service_checked = False
+        self.service_features = set()
+        self.server_info = {}
         self.enabled = False
         self.connected = False
         self.ready = False
@@ -37,6 +43,8 @@ class BuddyClient(QObject):
         self.status = 'offline'
         self.connection_text = '联网未开启'
         self.invitation = None
+        self.rally = None
+        self.rally_max_members = 12
         self.callbacks = {}
         self.last_message = 0.0
         self.clock_offset = 0.0
@@ -61,8 +69,30 @@ class BuddyClient(QObject):
         if self.ready:
             self.profile()
 
+    def change_server(self, endpoint, access_code=''):
+        normalized = normalize_endpoint(endpoint) if endpoint.strip() else ''
+        self.stop()
+        self.identity = None
+        self.relation = None
+        self.received.clear()
+        self.callbacks.clear()
+        self.clock_offset = 0
+        self.retry_seconds = 1
+        self.service_checked = False
+        self.service_features.clear()
+        self.server_info.clear()
+        self.endpoint = self.config.server_url = normalized
+        self.config.network_enabled = False
+        self.access_code = access_code.strip()
+        self.changed.emit()
+
     def start(self):
         if self.enabled:
+            return
+        if not self.endpoint:
+            self.connection_text = '请先配置自己的服务器地址'
+            self.config.network_enabled = False
+            self.changed.emit()
             return
         try:
             self.identity = IdentityStore(self.endpoint)
@@ -72,6 +102,8 @@ class BuddyClient(QObject):
             self.connection_text = f'无法读取连接身份：{error}'
             self.changed.emit()
             return
+        if self.identity.reset:
+            self.notice.emit('本机身份文件损坏，已自动重置，请重新邀请搭子')
         self.enabled = True
         self.service_checked = False
         self.connect_service()
@@ -91,6 +123,7 @@ class BuddyClient(QObject):
         self.connected = self.ready = False
         self.status = 'offline'
         self.connection_text = '联网未开启'
+        self.rally = None
         if self.socket:
             old, self.socket = self.socket, None
             old.abort()
@@ -105,15 +138,17 @@ class BuddyClient(QObject):
         self.changed.emit()
         if not self.service_checked:
             request = QNetworkRequest(QUrl(self.endpoint + '/health'))
+            request.setAttribute(QNetworkRequest.Attribute.RedirectPolicyAttribute, QNetworkRequest.RedirectPolicy.ManualRedirectPolicy)
             request.setTransferTimeout(10000)
             reply = self.preflight = self.http.get(request)
             reply.finished.connect(lambda: self.checked_service(reply))
             return
         if not self.identity.token:
             request = QNetworkRequest(QUrl(self.identity.endpoint + '/v2/devices'))
+            request.setAttribute(QNetworkRequest.Attribute.RedirectPolicyAttribute, QNetworkRequest.RedirectPolicy.ManualRedirectPolicy)
             request.setHeader(QNetworkRequest.KnownHeaders.ContentTypeHeader, 'application/json')
             request.setTransferTimeout(10000)
-            self.registration = self.http.post(request, b'{}')
+            self.registration = self.http.post(request, json.dumps({'access_code': self.access_code}).encode())
             reply = self.registration
             reply.finished.connect(lambda: self.registered(reply))
             return
@@ -159,6 +194,9 @@ class BuddyClient(QObject):
                 self.block_service()
                 return
             self.service_checked = True
+            self.server_info = data.get('server', {}) if isinstance(data.get('server'), dict) else {}
+            features = data.get('features', [])
+            self.service_features = {item for item in features if isinstance(item, str)} if isinstance(features, list) else set()
             self.connect_service()
         finally:
             reply.deleteLater()
@@ -182,6 +220,10 @@ class BuddyClient(QObject):
                 if reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute) == 404:
                     self.block_service()
                     return
+                if reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute) in (401, 403):
+                    self.access_code = ''
+                    self.block_service('服务器拒绝接入，请检查接入码或联系管理员')
+                    return
                 raise ValueError('暂时无法连接搭子服务，请检查网络或稍后重试')
             try:
                 data = json.loads(bytes(reply.readAll()))
@@ -192,6 +234,7 @@ class BuddyClient(QObject):
                 self.block_service()
                 return
             self.identity.set_identity(data)
+            self.access_code = ''
             self.connect_service()
         except (ValueError, OSError, UnicodeError) as error:
             self.schedule_retry(str(error))
@@ -238,7 +281,8 @@ class BuddyClient(QObject):
             elif initial:
                 self.notice.emit(result.get('message', '无法同步状态'))
         self.request('profile', {'paused': self.config.paused or getattr(self, 'focus_paused', False), 'visible': self.visible,
-                                 'capabilities': self.capabilities_provider()}, completed)
+                                 'capabilities': self.capabilities_provider(), 'device_info': collect_device_info(), 'visitSupport': True,
+                                 'allowVisits': self.config.allow_visits}, completed)
 
     def pulse(self):
         if self.connected:
@@ -270,6 +314,7 @@ class BuddyClient(QObject):
         self.connected = self.ready = False
         self.status = 'offline'
         self.invitation = None
+        self.rally = None
         self.heartbeat.stop()
         self.fail_requests()
         if code in (4001, 4401):
@@ -337,6 +382,17 @@ class BuddyClient(QObject):
                     entry[1](msg)
             elif msg.get('type') == 'action':
                 self.incoming.emit(msg)
+            elif msg.get('type') in ('visit_offer', 'visit_active', 'visit_end', 'visit_action', 'visit_action_status'):
+                self.visit_event.emit(msg)
+            elif msg.get('type') == 'rally_state':
+                had_rally = self.rally is not None
+                self.sync_rally(msg)
+                if had_rally and self.rally is None:
+                    self.notice.emit('集会已解散')
+            elif msg.get('type') == 'rally_alert':
+                self.rally_event.emit(msg)
+            elif msg.get('type') == 'rally_chat':
+                self.chat_event.emit(msg)
         except (ValueError, TypeError, KeyError):
             self.notice.emit('服务返回了无法识别的数据')
 
@@ -430,3 +486,86 @@ class BuddyClient(QObject):
     def acknowledge(self, msg, accepted, status='started'):
         self.send({'type': 'ack', 'relation_id': msg.get('relation_id'),
                    'action_id': msg.get('action_id'), 'accepted': accepted, 'status': status})
+
+    @property
+    def rally_supported(self):
+        return 'rally/v1' in self.service_features
+
+    def sync_rally(self, data):
+        rally = data.get('rally')
+        if rally is not None and not isinstance(rally, dict):
+            return
+        self.rally = rally
+        limits = data.get('rally_limits')
+        maximum = limits.get('max_members') if isinstance(limits, dict) else None
+        if type(maximum) is int and 1 <= maximum <= 1000:
+            self.rally_max_members = maximum
+        self.changed.emit()
+
+    def rally_create(self, name, member_limit=None):
+        def done(result):
+            if result['ok']:
+                self.sync_rally(result['data'])
+                self.notice.emit('集会已创建，分享集会码邀请成员')
+            else:
+                self.notice.emit(result.get('message', '创建集会失败'))
+        data = {'name': name, 'member_name': self.config.rally_name}
+        if member_limit is not None:
+            data['member_limit'] = member_limit
+        self.request('rally_create', data, done)
+
+    def rally_set_limit(self, member_limit):
+        def done(result):
+            if result['ok']:
+                self.sync_rally(result['data'])
+                self.notice.emit('集会人数上限已更新')
+            else:
+                self.notice.emit(result.get('message', '调整人数上限失败'))
+        self.request('rally_limit', {'member_limit': member_limit}, done)
+
+    def rally_join(self, code, name=''):
+        def done(result):
+            if result['ok']:
+                self.sync_rally(result['data'])
+                self.notice.emit('已加入集会')
+            else:
+                self.notice.emit(result.get('message', '加入集会失败'))
+        self.request('rally_join', {'code': code, 'name': name}, done)
+
+    def rally_leave(self):
+        def done(result):
+            if result['ok']:
+                self.sync_rally(result['data'])
+                self.notice.emit('已离开集会')
+            else:
+                self.notice.emit(result.get('message', '离开集会失败'))
+        self.request('rally_leave', callback=done)
+
+    def rally_rename(self, name):
+        def done(result):
+            if result['ok']:
+                self.sync_rally(result['data'])
+            else:
+                self.notice.emit(result.get('message', '修改集会名字失败'))
+        self.request('rally_name', {'name': name}, done)
+
+    def rally_alert(self, level, *, label=None, color=None):
+        def done(result):
+            if result['ok']:
+                delivered = result['data'].get('delivered', 0)
+                self.notice.emit(f'已广播给 {delivered} 位在线成员' if delivered else '成员都不在线，已在本机展示')
+            else:
+                self.notice.emit(result.get('message', '广播失败，已在本机展示'))
+        data = {'level': level, 'alert_id': uuid.uuid4().hex}
+        if label is not None:
+            data.update(label=label, color=color)
+        self.request('rally_alert', data, done, timeout=7)
+
+    def rally_chat(self, text, callback):
+        if not self.ready or not self.rally:
+            callback({'ok': False, 'message': '请先联网并加入集会'})
+            return
+        if 'rally-chat/v1' not in self.service_features:
+            callback({'ok': False, 'message': '当前服务尚未支持即时消息，可先使用本地双窗口体验'})
+            return
+        self.request('rally_chat', {'text': text, 'message_id': uuid.uuid4().hex}, callback, timeout=5)

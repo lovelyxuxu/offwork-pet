@@ -370,8 +370,8 @@ def _load_package(root):
             for field, direction in [('leftAction', -1), ('rightAction', 1)]:
                 require(actions[explore[field]].get('motion', {}).get('direction') == direction,
                         'exploration.'+field, '须引用对应方向的位移动作')
-            for field, default, low, high in [('maxRise', 220, 0, 400), ('maxDrop', 350, 0, 600),
-                    ('maxDistance', 420, 30, 600), ('jumpDurationMs', 900, 300, 3000)]:
+            for field, default, low, high in [('maxRise', 1200, 0, 4000), ('maxDrop', 1200, 0, 4000),
+                    ('maxDistance', 1600, 30, 4000), ('jumpDurationMs', 900, 300, 3000)]:
                 number(explore.get(field, default), 'exploration.'+field, low, high)
             jump = actions[explore['jumpAction']]
             animation = animations[jump['animation']]

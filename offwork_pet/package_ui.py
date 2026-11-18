@@ -47,6 +47,10 @@ class PackageDialog(QDialog):
         reset.clicked.connect(self.reset_memory)
         names.addWidget(reset)
         root.addLayout(names)
+        self.dialogue_button = QPushButton('角色台词 · 选择、导入与试读…')
+        self.dialogue_button.clicked.connect(self.open_dialogue)
+        root.addWidget(self.dialogue_button)
+        self.dialogue_dialog = None
         row = QHBoxLayout()
         add = QPushButton('导入角色包…')
         add.clicked.connect(self.import_package)
@@ -62,12 +66,25 @@ class PackageDialog(QDialog):
         create = QPushButton('制作自己的角色…')
         create.clicked.connect(pet.open_creator)
         root.addWidget(create)
+        browse = QPushButton('浏览在线角色…')
+        browse.clicked.connect(self.browse_online)
+        root.addWidget(browse)
+        self.workshop = None
         self.message = QLabel('导入 .petpack 文件即可使用，不需要手动解压。')
         self.message.setObjectName('muted')
         self.message.setWordWrap(True)
         self.message.setTextFormat(Qt.TextFormat.PlainText)
         root.addWidget(self.message)
         self.refresh()
+
+    def browse_online(self):
+        from .workshop_ui import WorkshopDialog
+        if self.workshop is None:
+            self.workshop = WorkshopDialog(self)
+        self.workshop.show()
+        self.workshop.raise_()
+        if not self.workshop.list.count():
+            self.workshop.load()
 
     def refresh(self):
         self.list.clear()
@@ -90,8 +107,20 @@ class PackageDialog(QDialog):
         item = self.list.currentItem()
         return item.data(Qt.ItemDataRole.UserRole) if item else None
 
+    def open_dialogue(self):
+        identifier = self.selected()
+        if identifier:
+            from .dialogue_ui import DialogueDialog
+            if self.dialogue_dialog:
+                self.dialogue_dialog.close()
+                self.dialogue_dialog.deleteLater()
+            self.dialogue_dialog = DialogueDialog(self.pet, identifier)
+            self.dialogue_dialog.show()
+            self.dialogue_dialog.raise_()
+
     def selection(self, *_):
         identifier = self.selected()
+        self.dialogue_button.setEnabled(identifier is not None)
         self.use.setEnabled(identifier is not None)
         self.delete.setEnabled(identifier is not None)
         if identifier:
@@ -137,12 +166,15 @@ class PackageDialog(QDialog):
             self.message.setText(str(error))
 
     def activate(self):
-        try:
-            self.pet.select_package(self.selected())
-            self.refresh()
-            self.message.setText('已切换角色。')
-        except (PackageError, OSError) as error:
-            self.message.setText(str(error))
+        identifier = self.selected()
+        if identifier is None:
+            return
+        self.message.setText('正在准备角色…')
+        def finished(error):
+            if error is None:
+                self.refresh()
+            self.message.setText(str(error) if error else '已切换角色。')
+        self.pet.character_loader.request(identifier, finished)
 
     def remove(self):
         identifier = self.selected()

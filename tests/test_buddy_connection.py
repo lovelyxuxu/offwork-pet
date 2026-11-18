@@ -17,6 +17,20 @@ class BuddyConnectionTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def test_profile_includes_local_device_metadata(self):
+        client = BuddyClient(Config(), persist=False)
+        info = {'computer_name': 'TEST-PC', 'system_user': 'tester', 'lan_ips': ['10.0.0.1']}
+        try:
+            with patch('offwork_pet.buddy.collect_device_info', return_value=info), \
+                    patch.object(client, 'request') as request:
+                client.profile()
+                self.assertEqual(request.call_args.args[0], 'profile')
+                self.assertEqual(request.call_args.args[1]['device_info'], info)
+        finally:
+            client.stop()
+            client.deadlines.stop()
+            client.deleteLater()
+
     def check_blocked(self, health, token='', devices_html=False):
         paths = []
         class Handler(BaseHTTPRequestHandler):
@@ -37,7 +51,7 @@ class BuddyConnectionTests(unittest.TestCase):
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         endpoint = f'http://127.0.0.1:{server.server_port}'
-        identity = SimpleNamespace(endpoint=endpoint, token=token, record={})
+        identity = SimpleNamespace(endpoint=endpoint, token=token, record={}, reset=False)
         client = BuddyClient(Config(network_enabled=True), persist=False, endpoint=endpoint)
         try:
             with patch('offwork_pet.buddy.IdentityStore', return_value=identity):

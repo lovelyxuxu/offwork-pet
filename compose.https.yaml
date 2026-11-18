@@ -1,0 +1,21 @@
+services:
+  app:
+    environment:
+      OFFWORK_TRUSTED_PROXIES: '*'
+    ports: !override []
+  gateway:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN to your server hostname}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - certificates:/data
+    depends_on:
+      app:
+        condition: service_healthy
+volumes:
+  certificates:

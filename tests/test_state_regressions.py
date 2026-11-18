@@ -12,12 +12,38 @@ from offwork_pet.core import Config
 
 
 class StateRegressionTests(unittest.TestCase):
+    def test_hide_menu_toggles_and_restores_visible_pet(self):
+        self.assertTrue(self.pet.isVisible())
+        self.assertFalse(self.pet.hide_action.isChecked())
+        self.pet.hide_action.trigger()
+        self.app.processEvents()
+        self.assertTrue(self.pet.isHidden())
+        self.assertTrue(self.pet.hide_action.isChecked())
+        self.assertFalse(self.pet.buddy.visible)
+        self.pet.hide_action.trigger()
+        self.app.processEvents()
+        self.assertTrue(self.pet.isVisible())
+        self.assertFalse(self.pet.hide_action.isChecked())
+        self.assertTrue(self.pet.buddy.visible)
+        self.assertTrue(any(screen.availableGeometry().contains(self.pet.geometry()) for screen in self.app.screens()))
+
+    def test_settings_preserve_hidden_state_and_restore_menu_clears_check(self):
+        self.pet.hide()
+        self.assertTrue(self.pet.hide_action.isChecked())
+        self.pet.apply_config()
+        self.assertTrue(self.pet.isHidden())
+        self.assertTrue(self.pet.hide_action.isChecked())
+        action = next(action for action in self.pet.menu.actions() if action.text() == '显示宠物 / 恢复位置')
+        action.trigger()
+        self.assertTrue(self.pet.isVisible())
+        self.assertFalse(self.pet.hide_action.isChecked())
+
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        self.pet = Pet(Config(character='lulu', autonomous_enabled=False), persist=False)
+        self.pet = Pet(Config(character='gugagaga', autonomous_enabled=False), persist=False)
         self.pet.animation.stop()
         self.pet.tick_timer.stop()
 
@@ -50,6 +76,9 @@ class StateRegressionTests(unittest.TestCase):
         self.mouse(QEvent.Type.MouseButtonPress, point, global_point, Qt.MouseButton.LeftButton)
         self.mouse(QEvent.Type.MouseMove, point + QPoint(40, 20), global_point + QPoint(40, 20), Qt.MouseButton.LeftButton)
         self.assertTrue(self.pet.dragging)
+        # Drag animations are pack-defined and no bundled role declares one, so
+        # inject a drag-source action to exercise focusOutEvent's cancel('drag').
+        self.pet.runtime.request('wave', {'source': 'drag'})
         self.assertEqual(self.pet.runtime.context['source'], 'drag')
         QApplication.sendEvent(self.pet, QFocusEvent(QEvent.Type.FocusOut))
         self.assertIsNone(self.pet.runtime.current)

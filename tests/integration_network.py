@@ -52,8 +52,8 @@ with TemporaryDirectory() as temporary:
                 if time.monotonic() > deadline:
                     raise
                 time.sleep(0.05)
-        a = Pet(Config(character='lulu'), persist=False, relay_endpoint=endpoint)
-        b = Pet(Config(character='lumei'), persist=False, relay_endpoint=endpoint)
+        a = Pet(Config(character='gugagaga'), persist=False, relay_endpoint=endpoint)
+        b = Pet(Config(character='noah-lulu'), persist=False, relay_endpoint=endpoint)
         a.move(100, 200)
         b.move(450, 200)
         a.buddy.persist = b.buddy.persist = True
@@ -69,20 +69,20 @@ with TemporaryDirectory() as temporary:
         until(lambda: a.buddy.invitation, 'Invitation not generated')
         b.buddy.redeem(a.buddy.invitation['code'])
         until(lambda: a.buddy.relation and b.buddy.relation and a.buddy.status == 'available', 'Pairing not synchronized')
-        assert a.buddy.relation['character'] == 'lumei'
+        assert a.buddy.relation['character'] == 'noah-lulu'
         relation = a.buddy.relation['id']
         a.open_actions(1)
         app.processEvents()
-        label = next(item['label'] for item in a.buddy.relation['capabilities']['interactions'] if item['id'] == 'pinch')
+        label = next(item['label'] for item in a.buddy.relation['capabilities']['interactions'] if item['id'] == 'wave')
         next(button for button in a.action_panel.remote_buttons if button.text() == label).click()
         assert a.action_panel.isVisible(), 'Interaction shelf closed after choosing an action'
-        until(lambda: b.runtime.current == 'cheek_reply', 'Remote package animation did not start')
+        until(lambda: b.runtime.current == 'wave', 'Remote package animation did not start')
         assert b.runtime.context['source'] == 'remote'
         until(lambda: '对方客户端已接收' in notices, 'Delivery not acknowledged')
         a.snapshot = countdown(datetime(2026, 10, 20, 17, 32), a.config)
         b.snapshot = a.snapshot
-        a.grab().save(str(OUTPUT / 'lulu.png'))
-        b.grab().save(str(OUTPUT / 'lumei-pinch.png'))
+        a.grab().save(str(OUTPUT / 'gugagaga.png'))
+        b.grab().save(str(OUTPUT / 'noah-lulu-wave.png'))
         a.open_buddy()
         app.processEvents()
         a.buddy_dialog.grab().save(str(OUTPUT / 'buddy-panel.png'))

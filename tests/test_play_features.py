@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication
 from offwork_pet.app import Pet, SettingsDialog
 from offwork_pet.behavior import BehaviorRuntime
 from offwork_pet.core import Config, ReminderTracker, countdown, validate
-from offwork_pet.desktop_scene import Rect, Scene
+from offwork_pet.desktop_scene import Rect, Scene, Surface
 from offwork_pet.packages import PackageError, PackageLibrary
 from offwork_pet.toys import Ball, BallGame
 from pack_fixtures import create_pack
@@ -205,6 +205,8 @@ class PlayGuiTests(unittest.TestCase):
                 self.assertNotEqual(self.pet.runtime.current, 'celebrate')
 
     def test_ball_entry_motion_drag_hide_and_package_switch(self):
+        floor = self.pet.y()+264
+        self.scene = Scene(self.scene.bounds, (Surface('window', 0, 1400, floor),))
         self.pet.open_actions()
         self.assertTrue(self.pet.action_panel.ball_button.isEnabled())
         self.assertEqual(self.pet.toggle_ball(), 'started')

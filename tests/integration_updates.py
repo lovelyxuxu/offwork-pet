@@ -135,7 +135,8 @@ def main():
             if args.from_archive:
                 catalog = json.loads((user / 'characters/catalog.json').read_text(encoding='utf-8'))
                 for package_id, version in expected_packages.items():
-                    assert catalog['packages'][package_id]['version'] == version
+                    actual = catalog['packages'][package_id]['version']
+                    assert actual == version, f'{package_id}: expected {version}, got {actual}'
                 assert json.loads((user / 'config.json').read_text(encoding='utf-8'))['character'] == 'noah-lulu'
                 print('PASS: shipped character versions installed/migrated; selected role preserved.', flush=True)
             if args.expect_package:

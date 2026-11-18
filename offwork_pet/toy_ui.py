@@ -18,15 +18,17 @@ class BallWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setWindowTitle('下班搭子 · 小球')
-        self.setToolTip('左右拖动后松手滚球 · 轻点再滚一次 · 右键收起')
+        self.setToolTip('向任意方向拖动并松手抛球 · 可落在可见窗口边缘 · 右键收起')
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setFixedSize(round(44*game.scale), round(44*game.scale))
         self.last_sample = None
         self.throw_velocity = 0
+        self.throw_velocity_y = 0
         self.sync()
 
     def sync(self):
-        self.move(round(self.game.ball.x-self.width()/2), round(self.floor-39*self.game.scale))
+        center_y = self.game.ball.y if self.game.ball.y is not None else self.floor-18*self.game.scale
+        self.move(round(self.game.ball.x-self.width()/2), round(center_y-21*self.game.scale))
         self.update()
 
     def paintEvent(self, event):
@@ -55,28 +57,39 @@ class BallWindow(QWidget):
             self.removed.emit()
         elif event.button() == Qt.MouseButton.LeftButton:
             self.game.hold()
-            self.last_sample = (event.globalPosition().x(), monotonic())
+            self.last_sample = (event.globalPosition().x(), event.globalPosition().y(), monotonic())
+            self.grab_offset = (event.globalPosition().x()-self.game.ball.x,
+                                event.globalPosition().y()-(self.game.ball.y or self.floor-18*self.game.scale))
             self.throw_velocity = 0
+            self.throw_velocity_y = 0
             self.moved = False
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
     def mouseMoveEvent(self, event):
         if self.game.dragging and event.buttons() & Qt.MouseButton.LeftButton:
-            x, now = event.globalPosition().x(), monotonic()
-            old_x, old_time = self.last_sample
-            if abs(x-old_x) > 1:
+            x, y, now = event.globalPosition().x(), event.globalPosition().y(), monotonic()
+            old_x, old_y, old_time = self.last_sample
+            if abs(x-old_x)+abs(y-old_y) > 1:
                 self.moved = True
                 self.throw_velocity = (x-old_x)/max(.016, now-old_time)
-                self.last_sample = x, now
-            self.game.ball.x = max(self.game.ball.left, min(self.game.ball.right, x))
+                self.throw_velocity_y = (y-old_y)/max(.016, now-old_time)
+                self.last_sample = x, y, now
+            self.game.ball.x = max(self.game.ball.left, min(self.game.ball.right, x-self.grab_offset[0]))
+            if self.game.ball.y is not None:
+                bounds = self.game.scene.bounds
+                radius = 16*self.game.scale
+                self.game.ball.y = max(bounds.top+radius, min(bounds.bottom-radius, y-self.grab_offset[1]))
             self.sync()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self.game.dragging:
-            velocity = self.throw_velocity if monotonic()-self.last_sample[1] <= .15 else 0
+            recent = monotonic()-self.last_sample[2] <= .15
+            velocity = self.throw_velocity if recent else 0
+            velocity_y = self.throw_velocity_y if recent else 0
             if not self.moved:
                 velocity = 180*self.game.scale
-            self.game.release(velocity)
+                velocity_y = -320*self.game.scale
+            self.game.release(velocity, velocity_y)
             self.setCursor(Qt.CursorShape.OpenHandCursor)
 
     def closeEvent(self, event):

@@ -1,0 +1,43 @@
+name: offwork-pet
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: offwork
+      POSTGRES_USER: offwork
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?Run python tools/init_selfhost.py first}
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U offwork -d offwork']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      OFFWORK_DATABASE_URL: postgresql://offwork:${DATABASE_PASSWORD}@db:5432/offwork
+      OFFWORK_ADMIN_USER: ${ADMIN_USER:-admin}
+      OFFWORK_ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Run python tools/init_selfhost.py first}
+      OFFWORK_SERVER_NAME: ${SERVER_NAME:-Offwork Pet}
+      OFFWORK_REGISTRATION: invite
+      OFFWORK_CHAT_DAYS: ${CHAT_DAYS:-30}
+      OFFWORK_RESOURCE_DIR: /data/resources
+    ports:
+      - '${LISTEN_ADDRESS:-127.0.0.1}:${PORT:-8765}:8765'
+    volumes:
+      - resources:/data
+    healthcheck:
+      test: [CMD, python, -c, 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8765/health", timeout=3)']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+volumes:
+  database:
+  resources:

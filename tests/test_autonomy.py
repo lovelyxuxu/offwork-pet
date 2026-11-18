@@ -236,11 +236,8 @@ class DeclarationTests(unittest.TestCase):
             for archive in bundle.glob('*.petpack'):
                 package = library.install(archive)
                 self.assertTrue(package.behavior['autonomy']['activities'])
-                if package.id in ('noah-lulu', 'codex-lumei', 'monthly-salary-cat'):
-                    directions = {a['motion']['direction'] for a in package.behavior['actions'].values() if 'motion' in a}
-                    self.assertEqual(directions, {-1, 1})
-                else:
-                    self.assertFalse(any('motion' in a for a in package.behavior['actions'].values()))
+                directions = {a['motion']['direction'] for a in package.behavior['actions'].values() if 'motion' in a}
+                self.assertEqual(directions, {-1, 1})
 
 
 if __name__ == '__main__':

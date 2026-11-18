@@ -12,6 +12,12 @@ import time
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 
 from .store import DomainError, Store
+from .device_info import validate_device_info
+from .admin import install_admin_routes
+from .hosting import Hosting
+from .http_body import read_json
+from .rally import Rally
+from .visits import Visits, install_routes
 
 
 @dataclass
@@ -23,6 +29,10 @@ class Session:
     ready: bool = False
     protocol: int = 1
     capabilities: dict | None = None
+    visits: bool = False
+    allow_visits: bool = False
+    ip: str = ''
+    connected: float = 0.0
 
 
 def validate_capabilities(value):
@@ -50,6 +60,18 @@ def validate_capabilities(value):
     return {**{key: value[key] for key in ('packageId', 'packageVersion', 'displayName', 'revision', 'digest')}, 'interactions': cleaned}
 
 
+def client_ip(socket):
+    peer = socket.client.host if socket.client else ''
+    if peer in ('127.0.0.1', '::1'):
+        real = socket.headers.get('x-real-ip', '').strip()
+        if real:
+            return real
+        forwarded = socket.headers.get('x-forwarded-for', '').split(',')[0].strip()
+        if forwarded:
+            return forwarded
+    return peer
+
+
 class Relay:
     def __init__(self, store):
         self.store = store
@@ -57,6 +79,10 @@ class Relay:
         self.limits = defaultdict(deque)
         self.pending = {}
         self.seen = {}
+        self.trend = deque(maxlen=2880)
+        self._trend_last = 0.0
+        self.visits = Visits(self)
+        self.rally = Rally(self)
 
     def limit(self, key, maximum, seconds):
         now = time.monotonic()
@@ -73,11 +99,33 @@ class Relay:
             return 'offline'
         return 'paused' if session.paused or not session.visible else 'available'
 
+    def sample_trend(self):
+        now = time.time()
+        if now - self._trend_last < 30:
+            return
+        self._trend_last = now
+        online = sum(1 for device in self.sessions if self.available(device) != 'offline')
+        self.trend.append({'t': now, 'online': online})
+
+    async def kick(self, device):
+        session = self.sessions.get(device)
+        if not session:
+            return False
+        with suppress(Exception):
+            await session.socket.close(code=4002)
+        if self.sessions.get(device) is session:
+            self.sessions.pop(device, None)
+            await self.visits.clear(device, 'offline')
+            await self.broadcast()
+        return True
+
     def state(self, device):
         relation = self.store.relation(device)
         if relation:
             partner = self.sessions.get(relation['partner_id'])
             relation['capabilities'] = partner.capabilities if partner and self.available(relation['partner_id']) != 'offline' else None
+            relation['visitSupport'] = bool(partner and partner.visits)
+            relation['allowVisits'] = bool(partner and partner.allow_visits)
         return {'relation': relation, 'partner_status': self.available(relation['partner_id']) if relation else 'offline',
                 'ended_id': self.store.device(device)['ended_id'], 'server_time': time.time()}
 
@@ -99,6 +147,7 @@ class Relay:
     async def broadcast(self):
         for device in list(self.sessions):
             await self.send(device, {'type': 'state', **self.state(device)})
+        await self.rally.broadcast_presence()
 
     async def clear_relation_actions(self, relation_id):
         for key, action in list(self.pending.items()):
@@ -110,6 +159,8 @@ class Relay:
         request_id = msg.get('request_id', '')
         kind = msg.get('type')
         session = self.sessions[device]
+        if self.store.device(device)['disabled']:
+            raise DomainError('access', '设备已被管理员禁用')
         session.last = time.monotonic()
         self.limit(('messages', device), 60, 10)
         if kind == 'heartbeat':
@@ -117,26 +168,42 @@ class Relay:
             await self.send(device, {'type': 'state', **self.state(device)})
             return
         if kind == 'profile':
+            info = validate_device_info(msg['device_info']) if 'device_info' in msg else None
+            if 'client_type' in msg:
+                self.store.validate_client_type(msg['client_type'])
             if type(msg.get('paused')) is not bool or type(msg.get('visible')) is not bool:
                 raise DomainError('format', '接收状态格式不正确')
             if session.protocol == 2:
+                if type(msg.get('visitSupport', False)) is not bool or type(msg.get('allowVisits', False)) is not bool:
+                    raise DomainError('format', '串门偏好格式不正确')
                 capabilities = validate_capabilities(msg.get('capabilities'))
                 character = capabilities['packageId'] if capabilities else ''
                 previous = session.capabilities
                 if previous and capabilities and previous['revision'] == capabilities['revision'] and previous != capabilities:
                     raise DomainError('format', '角色能力变化时需要新的修订标识')
                 if (previous or {}).get('revision') != (capabilities or {}).get('revision'):
+                    await self.visits.clear(device, 'character_changed')
                     for key, pending in list(self.pending.items()):
                         if pending['target'] == device:
                             self.pending.pop(key, None)
                             await self.reply(pending['sender'], pending['request_id'], error=DomainError('stale', '对方角色已切换，请刷新互动'))
                 session.capabilities = capabilities
+                session.visits = msg.get('visitSupport', False)
+                session.allow_visits = msg.get('allowVisits', False)
             else:
                 character = msg.get('character')
                 if character not in ('lulu', 'lumei'):
                     raise DomainError('character', '旧版本不支持该角色，请升级')
             self.store.character(device, character)
+            if info is not None:
+                self.store.update_device_info(device, info)
+            if 'client_type' in msg:
+                self.store.client_type(device, msg['client_type'])
             session.paused, session.visible, session.ready = msg['paused'], msg['visible'], True
+            if session.paused or not session.visible or not session.visits:
+                await self.visits.clear(device)
+            elif not session.allow_visits:
+                await self.visits.clear(device, incoming_only=True)
             await self.reply(device, request_id, self.state(device))
             await self.broadcast()
         elif kind == 'invite':
@@ -158,6 +225,7 @@ class Relay:
                 raise DomainError('format', '连接标识不正确')
             partner = self.store.unlink(device, expected)
             if partner:
+                await self.visits.clear(device, 'unlinked')
                 await self.clear_relation_actions(expected)
             await self.reply(device, request_id, self.state(device))
             await self.broadcast()
@@ -165,6 +233,10 @@ class Relay:
             await self.action(device, msg)
         elif kind == 'ack':
             await self.ack(device, msg)
+        elif kind in ('visit_start', 'visit_end', 'visit_ready', 'visit_action', 'visit_receipt') and session.protocol == 2:
+            await self.visits.command(device, msg)
+        elif kind in ('rally_create', 'rally_join', 'rally_leave', 'rally_name', 'rally_alert', 'rally_limit', 'rally_chat') and session.protocol == 2:
+            await self.rally.command(device, msg)
         else:
             raise DomainError('format', '不支持的操作')
 
@@ -242,7 +314,12 @@ class Relay:
                         await session.socket.close(code=4000)
                     if self.sessions.get(device) is session:
                         self.sessions.pop(device, None)
+                        await self.visits.clear(device, 'offline')
                     await self.broadcast()
+            await self.visits.sweep()
+            self.rally.sweep()
+            self.sample_trend()
+            self.hosting.prune()
             for key, action in list(self.pending.items()):
                 if now >= action['expires']:
                     self.pending.pop(key, None)
@@ -257,19 +334,45 @@ def create_app(db_path=None):
     @asynccontextmanager
     async def lifespan(app):
         task = asyncio.create_task(app.state.relay.maintenance())
-        yield
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
-        app.state.relay.store.close()
+        try:
+            yield
+        finally:
+            task.cancel()
+            try:
+                with suppress(asyncio.CancelledError):
+                    await task
+            finally:
+                try:
+                    app.state.relay.visits.storage.cleanup()
+                finally:
+                    app.state.relay.store.close()
 
     app = FastAPI(title='下班搭子 Relay', lifespan=lifespan, docs_url=None, redoc_url=None)
-    store = Store(db_path or os.environ.get('OFFWORK_DB', str(Path('data') / 'offwork.sqlite3')))
+    store = Store(db_path or os.environ.get('OFFWORK_DATABASE_URL') or os.environ.get('OFFWORK_DB', str(Path('data') / 'offwork.sqlite3')),
+                  rally_max_members=int(os.environ.get('OFFWORK_RALLY_MAX_MEMBERS', '100')))
     relay = app.state.relay = Relay(store)
+    try:
+        relay.hosting = Hosting(store)
+    except BaseException:
+        try:
+            relay.visits.storage.cleanup()
+        finally:
+            store.close()
+        raise
+    install_routes(app, relay)
+    install_admin_routes(app, relay)
+    from .resources import install as install_resources
+    install_resources(app)
 
     @app.get('/health')
     async def health():
-        return {'ok': True, 'protocol': 2, 'supported_protocols': [1, 2]}
+        return {'ok': True, 'protocol': 2, 'supported_protocols': [1, 2],
+                'server': relay.hosting.public(),
+                'features': ['visits/v1', 'rally/v1', 'rally-signals/v1', 'rally-settings/v1', 'rally-chat/v1']}
+
+    @app.get('/api/server/info')
+    async def info():
+        return {**relay.hosting.public(), 'protocols': [2], 'features': (await health())['features']}
 
     @app.post('/v1/devices')
     @app.post('/v2/devices')
@@ -278,7 +381,15 @@ def create_app(db_path=None):
             relay.limit(('register', request.client.host), 20, 3600)
         except DomainError as error:
             raise HTTPException(429, error.message)
-        return store.register()
+        try:
+            data = await read_json(request, allow_empty=True)
+            if not isinstance(data, dict):
+                raise HTTPException(400, '请求格式不正确')
+            return relay.hosting.register(request.headers.get('x-offwork-client-type', 'desktop'), data.get('access_code'))
+        except ValueError:
+            raise HTTPException(400, '请求格式不正确') from None
+        except DomainError as error:
+            raise HTTPException(403 if error.code == 'access' else 400, error.message)
 
     async def connect(socket: WebSocket, protocol=1):
         authorization = socket.headers.get('authorization', '')
@@ -290,13 +401,15 @@ def create_app(db_path=None):
             return
         await socket.accept()
         previous = relay.sessions.get(device)
-        session = Session(socket, time.monotonic(), protocol=protocol)
+        session = Session(socket, time.monotonic(), protocol=protocol, ip=client_ip(socket), connected=time.time())
         relay.sessions[device] = session
         if previous:
+            await relay.visits.clear(device, 'reconnected')
             with suppress(Exception):
                 await previous.socket.close(code=4001)
         try:
             await relay.send(device, {'type': 'state', **relay.state(device)})
+            await relay.rally.push(device)
             while relay.sessions.get(device) is session:
                 raw = await socket.receive_text()
                 if relay.sessions.get(device) is not session:
@@ -310,7 +423,7 @@ def create_app(db_path=None):
                     if not isinstance(msg, dict) or not isinstance(msg.get('request_id', ''), str) or len(msg.get('request_id', '')) > 64:
                         raise DomainError('format', '请求格式不正确')
                     request_id = msg.get('request_id', '')
-                    if msg.get('type') not in ('heartbeat', 'ack') and not request_id:
+                    if msg.get('type') not in ('heartbeat', 'ack', 'visit_receipt') and not request_id:
                         raise DomainError('format', '缺少请求标识')
                     await relay.command(device, msg)
                 except (ValueError, TypeError, RecursionError, DomainError) as error:
@@ -321,6 +434,7 @@ def create_app(db_path=None):
         finally:
             if relay.sessions.get(device) is session:
                 relay.sessions.pop(device, None)
+                await relay.visits.clear(device, 'offline')
                 await relay.broadcast()
 
     @app.websocket('/v1/connect')

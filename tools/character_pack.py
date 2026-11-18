@@ -1,19 +1,16 @@
 """Create, validate, export and preview data-only character packages."""
 import argparse
-import json
 from pathlib import Path
-import shutil
 import sys
 from tempfile import TemporaryDirectory
 from zipfile import ZipFile, ZIP_DEFLATED
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from PIL import Image, ImageSequence
-from offwork_pet.packages import PackageLibrary, PackageError, load_package, identifier
+from offwork_pet.packages import PackageLibrary, PackageError, load_package
 
 
-from offwork_pet.pack_builder import write_json, frames_from_image, make_template, add_action
+from offwork_pet.pack_builder import make_template, add_action
 
 
 def main():
@@ -75,7 +72,6 @@ def main():
                 temporary.unlink(missing_ok=True)
             print(f'已导出：{target}')
         else:
-            from PySide6.QtCore import QTimer
             from PySide6.QtGui import QFont, QFontDatabase
             from PySide6.QtWidgets import QApplication
             from offwork_pet.app import Pet
