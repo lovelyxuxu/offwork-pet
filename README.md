@@ -14,7 +14,7 @@ Windows 桌面角色、下班倒计时和搭子互动。Linux 或其他支持 Do
 
 ## Windows 桌宠
 
-[下载 Windows v0.6.0-preview.13 预览版](https://github.com/lovelyxuxu/offwork-pet/releases/tag/v0.6.0-preview.13)。解压后运行 `OffworkPet.exe`。
+[下载 Windows 预览版](http://106.54.27.8/download)。解压后运行 `OffworkPet.exe`。
 
 从源码运行时，安装 Python 3.10 或以上版本，在仓库根目录执行：
 

@@ -240,6 +240,9 @@ def load_config(path: Path | None = None) -> tuple[Config, str]:
             data["bubble_mode"] = "always" if data["bubble"] else "hidden"
         if data.get("character") in ("lulu", "lumei"):
             data["character"] = "gugagaga"
+        if "server_url" not in data and data.get("network_enabled") is True:
+            # Already-online installations used this address before server selection.
+            data["server_url"] = "http://106.54.27.8"
         known = Config.__dataclass_fields__
         config = Config(**{k: v for k, v in data.items() if k in known})
         # New default shortcuts must not invalidate a user's existing alert keys.

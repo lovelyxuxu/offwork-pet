@@ -22,7 +22,7 @@ def release_notes():
     return f'''下班搭子 v{version} · 自托管预览
 
 打开 OffworkPet.exe 启动。默认角色为“小芽”，可在角色管理中导入 .petpack。
-联网使用自己的服务器地址，在“搭子 → 服务器”配置。
+在“搭子 → 服务器”填写自己的服务器地址或 http://106.54.27.8。已有联网的旧版会沿用原服务。
 源码和自托管部署说明：https://github.com/lovelyxuxu/offwork-pet
 Qt / PySide6 等运行库许可见包内第三方许可文件。
 '''
